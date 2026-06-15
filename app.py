@@ -5700,6 +5700,7 @@ class MainWindow(QWidget):
                     self._override_period = None
                 
                 if not self._validate_input_structure(path, mode="opt", excel_file=xl):
+                    self._override_period = None
                     return
                 
                 self._prepare_kintai_and_duty_from_kinmu(path, xl)
@@ -5724,6 +5725,7 @@ class MainWindow(QWidget):
                 
         except Exception as e:
             logging.error(f"ファイル読み込みエラー: {str(e)}")
+            self._override_period = None
             QMessageBox.critical(
                 self,
                 "読み込みエラー",
