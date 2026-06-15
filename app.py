@@ -15,9 +15,9 @@ import datetime as dt
 from PySide6.QtWidgets import (
     QApplication, QWidget, QFileDialog, QPushButton, QLabel, QLineEdit,
     QHBoxLayout, QVBoxLayout, QMessageBox, QTextEdit, QComboBox, QGroupBox,
-    QTabWidget, QSpinBox, QProgressBar
+    QTabWidget, QSpinBox, QProgressBar, QDialog
 )
-from PySide6.QtCore import Qt, QMimeData
+from PySide6.QtCore import Qt, QMimeData, QTimer
 from PySide6.QtGui import QFont, QFontMetrics, QResizeEvent, QDragEnterEvent, QDropEvent
 
 import pulp
@@ -566,12 +566,12 @@ def derive_shift_from_kintai(kintai_df: pd.DataFrame, members_df: pd.DataFrame,
             aka_str = str(r['aka']).strip()
             if aka_str and aka_str.lower() != 'nan' and str(r.get('load', '')).strip().lower() == 'reserve':
                 reserve_aka.add(aka_str)
-    
+
     missing_aka = all_members_aka - kintai_aka
     missing_real = missing_aka - reserve_aka
     missing_reserve = missing_aka & reserve_aka
     if missing_real:
-        logging.warning(f"kintaiファイルに存在しない実在メンバー（全日不可として扱います）: {', '.join(sorted(missing_real))}")
+        logging.warning(f"kintaiファイルに存在しない実メンバー（全日不可として扱います）: {', '.join(sorted(missing_real))}")
     if missing_reserve:
         logging.info(f"kintaiファイルに存在しないダミースタッフ（全日可能として扱います）: {', '.join(sorted(missing_reserve))}")
     
@@ -620,7 +620,7 @@ def derive_shift_from_kintai(kintai_df: pd.DataFrame, members_df: pd.DataFrame,
             is_available = True
             
             if aka not in kintai_aka and aka in missing_real:
-                # settingにいるがinputにいない実在メンバーは全日不可
+                # settingにいるがinputにいない実メンバーは全日不可
                 leave_type = '1'
                 is_available = False
             elif aka in kintai_aka:
@@ -1221,7 +1221,7 @@ class JobData:
         instance.senior_set = set(instance.members[instance.members.get("senior", 0) == 1]["aka"].astype(str))
         instance.over_flag = {str(r["aka"]): int(r.get("over", 0)) for _, r in instance.members.iterrows()}
         instance.load = {str(r["aka"]): str(r.get("load", "normal")) for _, r in instance.members.iterrows()}
-        
+
         # 全日不可のメンバーを特定（どの日にも出勤可能でないメンバー）
         all_available = set()
         for avail_set in instance.avail_by_date.values():
@@ -1232,8 +1232,8 @@ class JobData:
             reserve_only = {a for a in never_available if instance.load.get(a, "normal") == "reserve"}
             real_absent = never_available - reserve_only
             if real_absent:
-                logging.info(f"全日不可の実在メンバー（order{role_prefix}優先順位から除外）: {', '.join(sorted(real_absent))}")
-        
+                logging.info(f"全日不可の実在メンバー（order{role_prefix}の優先順位から除外）: {', '.join(sorted(real_absent))}")
+
         instance.order_priority = {}
         if order_df is not None and not order_df.empty:
             import hashlib
@@ -4686,9 +4686,9 @@ class MainWindow(QWidget):
 
     def _compute_target_period(self) -> Tuple[int, int]:
         """Compute the target year and month based on button state
-        
+
         If an override period was detected from the input file, use that instead.
-        
+
         If button is checked (current period mode / 同月修正モード):
             Returns the period that contains today (21st to 20th of next month).
             Example: If today is Dec 13, we're in period 11/21-12/20, so return (2025, 11)
@@ -4699,16 +4699,16 @@ class MainWindow(QWidget):
             Example: If today is Dec 13, next 21st is Dec 21, so return (2025, 12) for period 12/21-1/20
             Example: If today is Dec 25, next 21st is Jan 21, so return (2026, 1) for period 1/21-2/20
         """
-        # 手動指定の期間がある場合は最優先
+        # 手動指定の期間がある場合は優先
         manual = getattr(self, '_manual_period', None)
         if manual is not None:
             return manual
-        
+
         # 入力ファイルから検出された期間がある場合はそれを優先
         override = getattr(self, '_override_period', None)
         if override is not None:
             return override
-        
+
         today = dt.date.today()
         
         # Check if current period mode is enabled (同月修正モード)
@@ -4849,9 +4849,7 @@ class MainWindow(QWidget):
         # スタイルを保存しておく
         self._button_style_normal = button_style
         self._button_style_on = toggle_button_style_on
-        
-        bottom_row.addStretch(1)
-        
+
         # 期間指定ボタン
         self._manual_period = None  # (year, month) or None
         btn_period = QPushButton("期間指定")
@@ -4859,10 +4857,10 @@ class MainWindow(QWidget):
         btn_period.clicked.connect(self._on_select_period)
         btn_period.setMinimumSize(int(self.current_font_size * 5), int(self.current_font_size * 2))
         btn_period.setStyleSheet(button_style)
-        btn_period.setToolTip("対象期間を手動で指定します（テスト用）")
+        btn_period.setToolTip("対象期間を手動指定します（テスト用）")
         bottom_row.addWidget(btn_period)
         self._btn_period = btn_period
-        
+
         bottom_row.addStretch(1)
         
         btn_log = QPushButton("ログ参照")
@@ -4885,50 +4883,50 @@ class MainWindow(QWidget):
             self.append_log("同月修正モード: オフ（翌月の期間を対象）")
 
     def _on_select_period(self):
-        """期間指定ダイアログを表示"""
+        """期間指定ダイアログ表示"""
         today = dt.date.today()
         current_year = today.year
-        
+
         from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox
-        
+
         dlg = QDialog(self)
-        dlg.setWindowTitle("対象期間の指定")
+        dlg.setWindowTitle("対象期間の設定")
         layout = QFormLayout(dlg)
-        
+
         year_spin = QSpinBox()
         year_spin.setRange(2020, 2040)
         year_spin.setValue(current_year)
-        layout.addRow("年:", year_spin)
-        
+        layout.addRow("年", year_spin)
+
         month_spin = QSpinBox()
         month_spin.setRange(1, 12)
         month_spin.setValue(today.month)
-        layout.addRow("月:", month_spin)
-        
-        note = QLabel("※ 指定した月の21日〜翌月20日が対象期間になります\n※「自動」を押すと入力ファイルから自動検出に戻ります")
+        layout.addRow("月", month_spin)
+
+        note = QLabel("※ 指定した月の21日〜翌月20日が対象期間になります\n※「自動」を押すと入力ファイルからの自動検出に戻ります")
         note.setFont(QFont("", max(8, self.current_font_size - 2)))
         layout.addRow(note)
-        
+
         buttons = QDialogButtonBox()
         btn_ok = buttons.addButton("設定", QDialogButtonBox.AcceptRole)
         btn_auto = buttons.addButton("自動", QDialogButtonBox.ResetRole)
         btn_cancel = buttons.addButton("キャンセル", QDialogButtonBox.RejectRole)
         layout.addRow(buttons)
-        
+
         result = {"action": "cancel"}
-        
+
         def on_ok():
             result["action"] = "set"
             dlg.accept()
-        
+
         def on_auto():
             result["action"] = "auto"
             dlg.accept()
-        
+
         btn_ok.clicked.connect(on_ok)
         btn_auto.clicked.connect(on_auto)
         btn_cancel.clicked.connect(dlg.reject)
-        
+
         if dlg.exec() == QDialog.Accepted:
             if result["action"] == "set":
                 self._manual_period = (year_spin.value(), month_spin.value())
@@ -5361,8 +5359,8 @@ class MainWindow(QWidget):
             
             # Clean up temporary files after successful output generation
             try:
-                if temp_dir.exists():
-                    for temp_file in temp_dir.glob('*'):
+                if temporary_dir.exists():
+                    for temp_file in temporary_dir.glob('*'):
                         if temp_file.is_file():
                             temp_file.unlink()
                             logging.info(f"一時ファイルを削除しました: {temp_file}")
@@ -5743,35 +5741,6 @@ class MainWindow(QWidget):
         path = Path(urls[0].toLocalFile())
         self.handle_dropped_file(path)
 
-    def _detect_period_from_input(self, excel_file: pd.ExcelFile) -> Optional[Tuple[int, int]]:
-        """入力ファイルの日付行から対象期間を自動検出する
-        
-        Returns:
-            (year, month) tuple or None if detection fails
-        """
-        try:
-            kinmu_sheet_name = None
-            for name in excel_file.sheet_names:
-                if '勤務入力表' in name:
-                    kinmu_sheet_name = name
-                    break
-            if kinmu_sheet_name is None:
-                return None
-            
-            df = pd.read_excel(excel_file, sheet_name=kinmu_sheet_name, header=None)
-            date_row = df.iloc[3]
-            
-            for col_idx in range(2, len(date_row), 2):
-                date_val = date_row.iloc[col_idx]
-                if isinstance(date_val, dt.datetime):
-                    d = date_val.date()
-                    if d.day == 21:
-                        return (d.year, d.month)
-                    break
-        except Exception as e:
-            logging.warning(f"入力ファイルからの期間検出に失敗: {e}")
-        return None
-
     def handle_dropped_file(self, path: Path):
         """Handle a dropped Excel file and determine processing mode based on sheet names
         
@@ -5791,18 +5760,19 @@ class MainWindow(QWidget):
                 self.append_log("勤務入力表シートを検出 → 最適化モードで処理します")
                 self.kinmu_path = path
                 
-                # 入力ファイルから期間を自動検出し、計算期間と異なる場合は入力ファイルの期間を使用
+                # 入力ファイルから期間を自動検出、計算期間と異なる場合は入力ファイルの期間を使用
+                # ※ validation内で_compute_target_periodを使うため、先に検出・設定する
                 detected_period = self._detect_period_from_input(xl)
                 computed_period = self._compute_target_period()
                 if detected_period and detected_period != computed_period:
                     self._override_period = detected_period
                     self.append_log(
-                        f"入力ファイルの期間({detected_period[0]}年{detected_period[1]}月)を使用します "
+                        f"入力ファイルの期間（{detected_period[0]}年{detected_period[1]}月）を使用します "
                         f"（計算上の期間: {computed_period[0]}年{computed_period[1]}月）"
                     )
                 else:
                     self._override_period = None
-                
+
                 if not self._validate_input_structure(path, mode="opt", excel_file=xl):
                     self._override_period = None
                     return
@@ -5813,6 +5783,7 @@ class MainWindow(QWidget):
             elif has_assign_sheet:
                 self.append_log("割当情報シートを検出 → 可視化モードで処理します")
                 self.visualization_input_path = path
+                self._override_period = None
                 
                 if not self._validate_input_structure(path, mode="vis", excel_file=xl):
                     return
@@ -5829,12 +5800,40 @@ class MainWindow(QWidget):
                 
         except Exception as e:
             logging.error(f"ファイル読み込みエラー: {str(e)}")
-            self._override_period = None
             QMessageBox.critical(
                 self,
                 "読み込みエラー",
                 f"Excelファイルを読み込めませんでした:\n{str(e)}"
             )
+
+    def _detect_period_from_input(self, excel_file: pd.ExcelFile) -> Optional[Tuple[int, int]]:
+        """入力ファイルの日付から対象期間を自動検出する
+
+        Returns:
+            (year, month) tuple or None if detection fails
+        """
+        try:
+            kinmu_sheet_name = None
+            for name in excel_file.sheet_names:
+                if '勤務入力表' in name:
+                    kinmu_sheet_name = name
+                    break
+            if kinmu_sheet_name is None:
+                return None
+
+            df = pd.read_excel(excel_file, sheet_name=kinmu_sheet_name, header=None)
+            date_row = df.iloc[3]
+
+            for col_idx in range(2, len(date_row), 2):
+                date_val = date_row.iloc[col_idx]
+                if isinstance(date_val, dt.datetime):
+                    d = date_val.date()
+                    if d.day == 21:
+                        return (d.year, d.month)
+                    break
+        except Exception as e:
+            logging.warning(f"入力ファイルからの期間検出失敗: {e}")
+        return None
 
     def _validate_input_structure(self, path: Path, mode: str, excel_file: pd.ExcelFile) -> bool:
         """Validate input file structure before processing
@@ -5930,7 +5929,7 @@ class MainWindow(QWidget):
             
             if unknown_members:
                 unique_unknown = list(dict.fromkeys(unknown_members))
-                warning_msg = f"settingファイルで定義されていないメンバーが含まれています（{', '.join(unique_unknown[:10])}）。これらのメンバーは無視されます。"
+                warning_msg = f"settingファイルで定義されていないメンバーが含まれています（{', '.join(unique_unknown[:10])}）。これらのメンバーは無視されます"
                 if len(unique_unknown) > 10:
                     warning_msg += f" ...他{len(unique_unknown) - 10}名"
                 self.append_log(f"警告: {warning_msg}")
@@ -6072,18 +6071,9 @@ class MainWindow(QWidget):
                 return
             
             if not duty_df.empty:
-                if self.duty_path and self.duty_path.exists():
-                    try:
-                        existing_duty_df = pd.read_excel(self.duty_path)
-                        combined_duty_df = pd.concat([existing_duty_df, duty_df], ignore_index=True)
-                    except Exception:
-                        combined_duty_df = duty_df
-                else:
-                    combined_duty_df = duty_df
-                
                 duty_output_path = temp_dir / "duty.xlsx"
                 try:
-                    combined_duty_df.to_excel(duty_output_path, sheet_name='fix', index=False)
+                    duty_df.to_excel(duty_output_path, sheet_name='fix', index=False)
                     self.duty_path = duty_output_path
                     self.append_log(f"dutyデータを生成: {duty_output_path}")
                 except PermissionError:
@@ -6137,6 +6127,163 @@ def ensure_xlrd_installed():
             logging.error(f"xlrdのインストールに失敗しました: {e}")
             raise RuntimeError("xlrdのインストールに失敗しました。手動で 'pip install xlrd' を実行してください。")
 
+
+class LicenseManager:
+    """Manages license validation with ID, password, and expiration date"""
+    
+    _KEY = b'ShiftOptimizer2026SecureKey!@#$%'
+    
+    def __init__(self, license_file: Optional[Path] = None):
+        if license_file is None:
+            self.license_file = get_app_dir() / '.license'
+        else:
+            self.license_file = Path(license_file)
+    
+    def _encrypt(self, data: str) -> str:
+        import base64
+        key = self._KEY
+        data_bytes = data.encode('utf-8')
+        encrypted = bytes([data_bytes[i] ^ key[i % len(key)] for i in range(len(data_bytes))])
+        return base64.b64encode(encrypted).decode('utf-8')
+    
+    def _decrypt(self, encrypted_data: str) -> str:
+        import base64
+        key = self._KEY
+        encrypted_bytes = base64.b64decode(encrypted_data.encode('utf-8'))
+        decrypted = bytes([encrypted_bytes[i] ^ key[i % len(key)] for i in range(len(encrypted_bytes))])
+        return decrypted.decode('utf-8')
+    
+    def _hash_password(self, password: str, salt: str) -> str:
+        import hashlib
+        return hashlib.sha256((password + salt).encode('utf-8')).hexdigest()
+    
+    def generate_license(self, user_id: str, password: str, expiration_days: int = 365) -> str:
+        import json
+        import secrets
+        salt = secrets.token_hex(16)
+        password_hash = self._hash_password(password, salt)
+        expiration_date = (dt.datetime.now() + dt.timedelta(days=expiration_days)).strftime('%Y-%m-%d')
+        
+        license_data = {
+            'user_id': user_id,
+            'password_hash': password_hash,
+            'salt': salt,
+            'expiration_date': expiration_date,
+            'created_at': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        encrypted = self._encrypt(json.dumps(license_data))
+        
+        with open(self.license_file, 'w', encoding='utf-8') as f:
+            f.write(encrypted)
+        
+        return str(self.license_file)
+    
+    def validate_license(self, user_id: str, password: str) -> Tuple[bool, str]:
+        import json
+        if not self.license_file.exists():
+            return False, "ライセンスファイルが見つかりません。"
+        
+        try:
+            with open(self.license_file, 'r', encoding='utf-8') as f:
+                encrypted = f.read()
+            
+            decrypted = self._decrypt(encrypted)
+            license_data = json.loads(decrypted)
+            
+            if license_data['user_id'] != user_id:
+                return False, "ユーザーIDが正しくありません。"
+            
+            password_hash = self._hash_password(password, license_data['salt'])
+            if password_hash != license_data['password_hash']:
+                return False, "パスワードが正しくありません。"
+            
+            expiration_date = dt.datetime.strptime(license_data['expiration_date'], '%Y-%m-%d')
+            if dt.datetime.now() > expiration_date:
+                return False, f"ライセンスの有効期限が切れています。（有効期限: {license_data['expiration_date']}）"
+            
+            days_remaining = (expiration_date - dt.datetime.now()).days
+            return True, f"ライセンス認証成功。残り{days_remaining}日有効です。"
+            
+        except Exception as e:
+            return False, f"ライセンスファイルの読み込みに失敗しました: {str(e)}"
+
+
+class LicenseDialog(QDialog):
+    """License authentication dialog"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("ライセンス認証")
+        self.setFixedSize(400, 200)
+        self.authenticated = False
+        
+        layout = QVBoxLayout(self)
+        
+        # Title
+        title_label = QLabel("Shift Optimizer - ライセンス認証")
+        title_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(title_label)
+        
+        # User ID
+        id_layout = QHBoxLayout()
+        id_label = QLabel("ユーザーID:")
+        id_label.setFixedWidth(100)
+        self.id_input = QLineEdit()
+        id_layout.addWidget(id_label)
+        id_layout.addWidget(self.id_input)
+        layout.addLayout(id_layout)
+        
+        # Password
+        pw_layout = QHBoxLayout()
+        pw_label = QLabel("パスワード:")
+        pw_label.setFixedWidth(100)
+        self.pw_input = QLineEdit()
+        self.pw_input.setEchoMode(QLineEdit.EchoMode.Password)
+        pw_layout.addWidget(pw_label)
+        pw_layout.addWidget(self.pw_input)
+        layout.addLayout(pw_layout)
+        
+        # Status message
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: red;")
+        layout.addWidget(self.status_label)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        self.login_btn = QPushButton("認証")
+        self.login_btn.clicked.connect(self.authenticate)
+        self.cancel_btn = QPushButton("キャンセル")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.login_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        # Enter key triggers login
+        self.pw_input.returnPressed.connect(self.authenticate)
+    
+    def authenticate(self):
+        """Validate license credentials"""
+        user_id = self.id_input.text().strip()
+        password = self.pw_input.text()
+        
+        if not user_id or not password:
+            self.status_label.setText("ユーザーIDとパスワードを入力してください。")
+            return
+        
+        manager = LicenseManager()
+        is_valid, message = manager.validate_license(user_id, password)
+        
+        if is_valid:
+            self.authenticated = True
+            self.status_label.setStyleSheet("color: green;")
+            self.status_label.setText(message)
+            QTimer.singleShot(1000, self.accept)
+        else:
+            self.status_label.setStyleSheet("color: red;")
+            self.status_label.setText(message)
+
+
 def main():
     ensure_xlrd_installed()
     sys.excepthook = _global_excepthook
@@ -6145,6 +6292,11 @@ def main():
     default_font_name = get_system_japanese_font()
     if default_font_name:
         app.setFont(QFont(default_font_name, 10))
+    
+    # License authentication
+    license_dialog = LicenseDialog()
+    if license_dialog.exec() != QDialog.DialogCode.Accepted or not license_dialog.authenticated:
+        sys.exit(0)
     
     w = MainWindow()
     
