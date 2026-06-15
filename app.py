@@ -559,9 +559,21 @@ def derive_shift_from_kintai(kintai_df: pd.DataFrame, members_df: pd.DataFrame,
     if extra_aka:
         logging.warning(f"kintaiファイルに未知のaka: {', '.join(sorted(extra_aka))}")
     
+    # load列からreserve（ダミー）スタッフを特定
+    reserve_aka = set()
+    if 'load' in members_df.columns:
+        for _, r in members_df.iterrows():
+            aka_str = str(r['aka']).strip()
+            if aka_str and aka_str.lower() != 'nan' and str(r.get('load', '')).strip().lower() == 'reserve':
+                reserve_aka.add(aka_str)
+    
     missing_aka = all_members_aka - kintai_aka
-    if missing_aka:
-        logging.warning(f"kintaiファイルに存在しないaka（全日勤務可能として扱います）: {', '.join(sorted(missing_aka))}")
+    missing_real = missing_aka - reserve_aka
+    missing_reserve = missing_aka & reserve_aka
+    if missing_real:
+        logging.warning(f"kintaiファイルに存在しない実在メンバー（全日不可として扱います）: {', '.join(sorted(missing_real))}")
+    if missing_reserve:
+        logging.info(f"kintaiファイルに存在しないダミースタッフ（全日可能として扱います）: {', '.join(sorted(missing_reserve))}")
     
     last_day_of_month = calendar.monthrange(target_year, target_month)[1]
     next_month = target_month + 1 if target_month < 12 else 1
@@ -607,7 +619,11 @@ def derive_shift_from_kintai(kintai_df: pd.DataFrame, members_df: pd.DataFrame,
             leave_type = ''
             is_available = True
             
-            if aka in kintai_aka:
+            if aka not in kintai_aka and aka in missing_real:
+                # settingにいるがinputにいない実在メンバーは全日不可
+                leave_type = '1'
+                is_available = False
+            elif aka in kintai_aka:
                 kintai_row = kintai_df[kintai_df['aka'] == aka].iloc[0]
                 
                 if day_num in kintai_row.index:
@@ -1206,12 +1222,25 @@ class JobData:
         instance.over_flag = {str(r["aka"]): int(r.get("over", 0)) for _, r in instance.members.iterrows()}
         instance.load = {str(r["aka"]): str(r.get("load", "normal")) for _, r in instance.members.iterrows()}
         
+        # 全日不可のメンバーを特定（どの日にも出勤可能でないメンバー）
+        all_available = set()
+        for avail_set in instance.avail_by_date.values():
+            all_available.update(avail_set)
+        all_member_akas = set(instance.members["aka"].astype(str))
+        never_available = all_member_akas - all_available
+        if never_available:
+            reserve_only = {a for a in never_available if instance.load.get(a, "normal") == "reserve"}
+            real_absent = never_available - reserve_only
+            if real_absent:
+                logging.info(f"全日不可の実在メンバー（orderA優先順位から除外）: {', '.join(sorted(real_absent))}")
+        
         instance.order_priority = {}
         if order_df is not None and not order_df.empty:
             import hashlib
             for col in order_df.columns:
                 dept = str(col)
-                non_null_values = order_df[col].dropna().tolist()
+                # 全日不可の実在メンバーをorderから除外
+                non_null_values = [v for v in order_df[col].dropna().tolist() if str(v) not in never_available or instance.load.get(str(v), "normal") == "reserve"]
                 total_members = len(non_null_values)
                 if total_members == 0:
                     continue
@@ -4670,6 +4699,11 @@ class MainWindow(QWidget):
             Example: If today is Dec 13, next 21st is Dec 21, so return (2025, 12) for period 12/21-1/20
             Example: If today is Dec 25, next 21st is Jan 21, so return (2026, 1) for period 1/21-2/20
         """
+        # 手動指定の期間がある場合は最優先
+        manual = getattr(self, '_manual_period', None)
+        if manual is not None:
+            return manual
+        
         # 入力ファイルから検出された期間がある場合はそれを優先
         override = getattr(self, '_override_period', None)
         if override is not None:
@@ -4818,6 +4852,19 @@ class MainWindow(QWidget):
         
         bottom_row.addStretch(1)
         
+        # 期間指定ボタン
+        self._manual_period = None  # (year, month) or None
+        btn_period = QPushButton("期間指定")
+        btn_period.setFont(QFont("", max(8, self.current_font_size - 2)))
+        btn_period.clicked.connect(self._on_select_period)
+        btn_period.setMinimumSize(int(self.current_font_size * 5), int(self.current_font_size * 2))
+        btn_period.setStyleSheet(button_style)
+        btn_period.setToolTip("対象期間を手動で指定します（テスト用）")
+        bottom_row.addWidget(btn_period)
+        self._btn_period = btn_period
+        
+        bottom_row.addStretch(1)
+        
         btn_log = QPushButton("ログ参照")
         btn_log.setFont(QFont("", self.current_font_size))
         btn_log.clicked.connect(self.open_log_file)
@@ -4836,6 +4883,63 @@ class MainWindow(QWidget):
         else:
             self.current_period_button.setStyleSheet(self._button_style_normal)
             self.append_log("同月修正モード: オフ（翌月の期間を対象）")
+
+    def _on_select_period(self):
+        """期間指定ダイアログを表示"""
+        today = dt.date.today()
+        current_year = today.year
+        
+        from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox
+        
+        dlg = QDialog(self)
+        dlg.setWindowTitle("対象期間の指定")
+        layout = QFormLayout(dlg)
+        
+        year_spin = QSpinBox()
+        year_spin.setRange(2020, 2040)
+        year_spin.setValue(current_year)
+        layout.addRow("年:", year_spin)
+        
+        month_spin = QSpinBox()
+        month_spin.setRange(1, 12)
+        month_spin.setValue(today.month)
+        layout.addRow("月:", month_spin)
+        
+        note = QLabel("※ 指定した月の21日〜翌月20日が対象期間になります\n※「自動」を押すと入力ファイルから自動検出に戻ります")
+        note.setFont(QFont("", max(8, self.current_font_size - 2)))
+        layout.addRow(note)
+        
+        buttons = QDialogButtonBox()
+        btn_ok = buttons.addButton("設定", QDialogButtonBox.AcceptRole)
+        btn_auto = buttons.addButton("自動", QDialogButtonBox.ResetRole)
+        btn_cancel = buttons.addButton("キャンセル", QDialogButtonBox.RejectRole)
+        layout.addRow(buttons)
+        
+        result = {"action": "cancel"}
+        
+        def on_ok():
+            result["action"] = "set"
+            dlg.accept()
+        
+        def on_auto():
+            result["action"] = "auto"
+            dlg.accept()
+        
+        btn_ok.clicked.connect(on_ok)
+        btn_auto.clicked.connect(on_auto)
+        btn_cancel.clicked.connect(dlg.reject)
+        
+        if dlg.exec() == QDialog.Accepted:
+            if result["action"] == "set":
+                self._manual_period = (year_spin.value(), month_spin.value())
+                self._btn_period.setText(f"期間: {year_spin.value()}/{month_spin.value()}")
+                self._btn_period.setStyleSheet(self._button_style_on)
+                self.append_log(f"対象期間を手動設定: {year_spin.value()}年{month_spin.value()}月")
+            elif result["action"] == "auto":
+                self._manual_period = None
+                self._btn_period.setText("期間指定")
+                self._btn_period.setStyleSheet(self._button_style_normal)
+                self.append_log("対象期間を自動検出に戻しました")
 
     def _update_font_sizes(self):
         self.base_font_size = max(10, int(self.window_height / 60))
@@ -5826,9 +5930,11 @@ class MainWindow(QWidget):
             
             if unknown_members:
                 unique_unknown = list(dict.fromkeys(unknown_members))
-                errors.append(f"settingファイルで定義されていないメンバーが含まれています（{', '.join(unique_unknown[:10])}）")
+                warning_msg = f"settingファイルで定義されていないメンバーが含まれています（{', '.join(unique_unknown[:10])}）。これらのメンバーは無視されます。"
                 if len(unique_unknown) > 10:
-                    errors.append(f"...他{len(unique_unknown) - 10}名")
+                    warning_msg += f" ...他{len(unique_unknown) - 10}名"
+                self.append_log(f"警告: {warning_msg}")
+                logging.warning(warning_msg)
             
             date_row = df.iloc[3]
             target_year, target_month = self._compute_target_period()
