@@ -4658,6 +4658,8 @@ class MainWindow(QWidget):
     def _compute_target_period(self) -> Tuple[int, int]:
         """Compute the target year and month based on button state
         
+        If an override period was detected from the input file, use that instead.
+        
         If button is checked (current period mode / 同月修正モード):
             Returns the period that contains today (21st to 20th of next month).
             Example: If today is Dec 13, we're in period 11/21-12/20, so return (2025, 11)
@@ -4668,6 +4670,11 @@ class MainWindow(QWidget):
             Example: If today is Dec 13, next 21st is Dec 21, so return (2025, 12) for period 12/21-1/20
             Example: If today is Dec 25, next 21st is Jan 21, so return (2026, 1) for period 1/21-2/20
         """
+        # 入力ファイルから検出された期間がある場合はそれを優先
+        override = getattr(self, '_override_period', None)
+        if override is not None:
+            return override
+        
         today = dt.date.today()
         
         # Check if current period mode is enabled (同月修正モード)
@@ -5343,6 +5350,9 @@ class MainWindow(QWidget):
             traceback.print_exc()
             self._set_progress(0, "エラー発生")
             QMessageBox.critical(self, "予期しないエラー", msg)
+        finally:
+            # 入力ファイル由来の期間オーバーライドを必ずクリア
+            self._override_period = None
 
     def run_visualize(self):
         """Run visualization only mode"""
@@ -5629,6 +5639,35 @@ class MainWindow(QWidget):
         path = Path(urls[0].toLocalFile())
         self.handle_dropped_file(path)
 
+    def _detect_period_from_input(self, excel_file: pd.ExcelFile) -> Optional[Tuple[int, int]]:
+        """入力ファイルの日付行から対象期間を自動検出する
+        
+        Returns:
+            (year, month) tuple or None if detection fails
+        """
+        try:
+            kinmu_sheet_name = None
+            for name in excel_file.sheet_names:
+                if '勤務入力表' in name:
+                    kinmu_sheet_name = name
+                    break
+            if kinmu_sheet_name is None:
+                return None
+            
+            df = pd.read_excel(excel_file, sheet_name=kinmu_sheet_name, header=None)
+            date_row = df.iloc[3]
+            
+            for col_idx in range(2, len(date_row), 2):
+                date_val = date_row.iloc[col_idx]
+                if isinstance(date_val, dt.datetime):
+                    d = date_val.date()
+                    if d.day == 21:
+                        return (d.year, d.month)
+                    break
+        except Exception as e:
+            logging.warning(f"入力ファイルからの期間検出に失敗: {e}")
+        return None
+
     def handle_dropped_file(self, path: Path):
         """Handle a dropped Excel file and determine processing mode based on sheet names
         
@@ -5648,7 +5687,20 @@ class MainWindow(QWidget):
                 self.append_log("勤務入力表シートを検出 → 最適化モードで処理します")
                 self.kinmu_path = path
                 
+                # 入力ファイルから期間を自動検出し、計算期間と異なる場合は入力ファイルの期間を使用
+                detected_period = self._detect_period_from_input(xl)
+                computed_period = self._compute_target_period()
+                if detected_period and detected_period != computed_period:
+                    self._override_period = detected_period
+                    self.append_log(
+                        f"入力ファイルの期間({detected_period[0]}年{detected_period[1]}月)を使用します "
+                        f"（計算上の期間: {computed_period[0]}年{computed_period[1]}月）"
+                    )
+                else:
+                    self._override_period = None
+                
                 if not self._validate_input_structure(path, mode="opt", excel_file=xl):
+                    self._override_period = None
                     return
                 
                 self._prepare_kintai_and_duty_from_kinmu(path, xl)
@@ -5673,6 +5725,7 @@ class MainWindow(QWidget):
                 
         except Exception as e:
             logging.error(f"ファイル読み込みエラー: {str(e)}")
+            self._override_period = None
             QMessageBox.critical(
                 self,
                 "読み込みエラー",
