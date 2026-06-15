@@ -896,7 +896,9 @@ def extract_kintai_and_duty_from_kinmu(
         name_short = name_full.split()[0] if ' ' in name_full else name_full.split('　')[0] if '　' in name_full else name_full
         
         # akaを取得（存在しない場合はスキップ）
-        aka = name_to_aka.get(name_full) or name_to_aka.get(name_short)
+        aka = name_to_aka.get(name_full)
+        if not aka and len(surname_to_akas.get(name_short, [])) <= 1:
+            aka = name_to_aka.get(name_short)
         if not aka:
             # 同姓メンバーの区別: 入力名の名部分の先頭文字で括弧付き設定名とマッチ
             given_name = ''
