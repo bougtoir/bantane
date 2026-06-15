@@ -844,19 +844,30 @@ def extract_kintai_and_duty_from_kinmu(
     # メンバーのakaマッピングを作成
     name_to_aka: Dict[str, str] = {}
     aka_to_display_name: Dict[str, str] = {}  # akaからjobAのnameへのマッピング
+    surname_to_akas: Dict[str, List[Tuple[str, str]]] = {}  # 姓 -> [(name, aka), ...]（同姓対応）
+    import re as _re
     if 'name' in members_df.columns and 'aka' in members_df.columns:
         for _, row in members_df.iterrows():
             name = str(row['name']).strip()
             aka = str(row['aka']).strip()
             if not aka or aka.lower() == 'nan':
                 continue
-            # 姓のみでもマッチするように
-            name_short = name.split()[0] if ' ' in name else name.split('　')[0] if '　' in name else name
+            # 括弧を除去して姓を抽出（例: 後藤（奈）→ 後藤）
+            name_base = _re.sub(r'[（(].+?[）)]', '', name).strip()
+            name_short = name_base.split()[0] if ' ' in name_base else name_base.split('　')[0] if '　' in name_base else name_base
             name_to_aka[name] = aka
-            name_to_aka[name_short] = aka
-            # 最初に出てきたnameを正規名として使用（jobA/jobBが先、dictA/dictBのaka2行が後）
+            surname_to_akas.setdefault(name_short, []).append((name, aka))
+            # 括弧付き名（例: 後藤（奈））から区別文字を抽出して追加キーを登録
+            paren_match = _re.search(r'[（(](.+?)[）)]', name)
+            if paren_match:
+                disambig_char = paren_match.group(1)
+                name_to_aka[f"{name_short}\x00{disambig_char}"] = aka
             if aka not in aka_to_display_name:
                 aka_to_display_name[aka] = name
+        # 同姓が1人だけの場合のみ姓単独マッピングを登録
+        for surname, members_list in surname_to_akas.items():
+            if len(members_list) == 1:
+                name_to_aka[surname] = members_list[0][1]
     
     # 日付行（行3）を取得
     date_row = df.iloc[3]
@@ -886,6 +897,15 @@ def extract_kintai_and_duty_from_kinmu(
         
         # akaを取得（存在しない場合はスキップ）
         aka = name_to_aka.get(name_full) or name_to_aka.get(name_short)
+        if not aka:
+            # 同姓メンバーの区別: 入力名の名部分の先頭文字で括弧付き設定名とマッチ
+            given_name = ''
+            if '　' in name_full:
+                given_name = name_full.split('　', 1)[1]
+            elif ' ' in name_full:
+                given_name = name_full.split(' ', 1)[1]
+            if given_name:
+                aka = name_to_aka.get(f"{name_short}\x00{given_name[0]}")
         if not aka:
             logging.warning(f"Unknown member in kinmu sheet: {name_full}")
             continue
