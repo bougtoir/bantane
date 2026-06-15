@@ -571,7 +571,7 @@ def derive_shift_from_kintai(kintai_df: pd.DataFrame, members_df: pd.DataFrame,
     missing_real = missing_aka - reserve_aka
     missing_reserve = missing_aka & reserve_aka
     if missing_real:
-        logging.warning(f"kintaiファイルに存在しない実メンバー（全日勤務可能として扱います）: {', '.join(sorted(missing_real))}")
+        logging.warning(f"kintaiファイルに存在しない実メンバー（全日不可として扱います）: {', '.join(sorted(missing_real))}")
     if missing_reserve:
         logging.info(f"kintaiファイルに存在しないダミースタッフ（全日可能として扱います）: {', '.join(sorted(missing_reserve))}")
     
@@ -5760,10 +5760,8 @@ class MainWindow(QWidget):
                 self.append_log("勤務入力表シートを検出 → 最適化モードで処理します")
                 self.kinmu_path = path
                 
-                if not self._validate_input_structure(path, mode="opt", excel_file=xl):
-                    return
-                
                 # 入力ファイルから期間を自動検出、計算期間と異なる場合は入力ファイルの期間を使用
+                # ※ validation内で_compute_target_periodを使うため、先に検出・設定する
                 detected_period = self._detect_period_from_input(xl)
                 computed_period = self._compute_target_period()
                 if detected_period and detected_period != computed_period:
@@ -5775,6 +5773,10 @@ class MainWindow(QWidget):
                 else:
                     self._override_period = None
 
+                if not self._validate_input_structure(path, mode="opt", excel_file=xl):
+                    self._override_period = None
+                    return
+                
                 self._prepare_kintai_and_duty_from_kinmu(path, xl)
                 self.run_assign()
                 
