@@ -2,7 +2,7 @@ pandas
 numpy
 matplotlib
 PySide6
-ortools
+pulp
 openpyxl
 xlrd
 jpholiday

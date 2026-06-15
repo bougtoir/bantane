@@ -1232,7 +1232,7 @@ class JobData:
             reserve_only = {a for a in never_available if instance.load.get(a, "normal") == "reserve"}
             real_absent = never_available - reserve_only
             if real_absent:
-                logging.info(f"全日不可の実在メンバー（orderA優先順位から除外）: {', '.join(sorted(real_absent))}")
+                logging.info(f"全日不可の実在メンバー（order{role_prefix}優先順位から除外）: {', '.join(sorted(real_absent))}")
         
         instance.order_priority = {}
         if order_df is not None and not order_df.empty:
