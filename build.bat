@@ -93,7 +93,12 @@ REM Create distribution folder
 if not exist "release" mkdir release
 copy /Y dist\BantaneShiftOptimizer.exe release\
 if not exist "release\files" mkdir release\files
-xcopy /Y /E files\*.xlsx release\files\
+REM settingファイルをコピー（リポジトリ直下またはfiles/から探す）
+if exist "files\setting*.xlsx" (
+    xcopy /Y files\setting*.xlsx release\files\
+) else (
+    for %%f in (setting*.xlsx) do copy /Y "%%f" release\files\
+)
 
 echo.
 echo release\ フォルダに配布用ファイルをまとめました。
