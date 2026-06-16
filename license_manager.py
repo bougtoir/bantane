@@ -36,9 +36,24 @@ class LicenseManager:
 
     def __init__(self, license_file: Optional[Path] = None):
         if license_file is None:
-            self.license_file = _get_app_dir() / '.license'
+            self.license_file = self._find_license_file()
         else:
             self.license_file = Path(license_file)
+
+    @staticmethod
+    def _find_license_file() -> Path:
+        """Search for .license file in app dir and its subdirectories."""
+        app_dir = _get_app_dir()
+        # 1) app dir itself
+        candidate = app_dir / '.license'
+        if candidate.exists():
+            return candidate
+        # 2) files/ subfolder
+        candidate = app_dir / 'files' / '.license'
+        if candidate.exists():
+            return candidate
+        # Default to app dir (will show "not found" on validation)
+        return app_dir / '.license'
 
     # -- cryptography helpers ------------------------------------------------
 
