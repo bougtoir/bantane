@@ -134,8 +134,10 @@ class LicenseManager:
         enc_salt = os.urandom(16)
         token = self._encrypt(json.dumps(license_data), enc_salt)
 
+        # Fixed-length format: exactly 16 salt bytes followed by token.
+        # No delimiter needed — salt length is known at read time.
         with open(self.license_file, 'wb') as f:
-            f.write(enc_salt + b'\n' + token)
+            f.write(enc_salt + token)
 
         return str(self.license_file)
 
@@ -149,15 +151,16 @@ class LicenseManager:
         try:
             raw = self.license_file.read_bytes()
 
-            # v2 format: salt(16 bytes) + b'\n' + Fernet token
-            if b'\n' in raw:
-                sep = raw.index(b'\n')
-                enc_salt = raw[:sep]
-                token = raw[sep + 1:]
-                decrypted = self._decrypt(token, enc_salt)
-                license_data = json.loads(decrypted)
-            else:
+            # v2 format: first 16 bytes = encryption salt, rest = Fernet token
+            if len(raw) <= 16:
                 return False, '\u30e9\u30a4\u30bb\u30f3\u30b9\u30d5\u30a1\u30a4\u30eb\u306e\u5f62\u5f0f\u304c\u4e0d\u6b63\u3067\u3059\u3002'
+            enc_salt = raw[:16]
+            token = raw[16:]
+            # Strip legacy separator if present (v2 files written before fix)
+            if token[:1] == b'\n':
+                token = token[1:]
+            decrypted = self._decrypt(token, enc_salt)
+            license_data = json.loads(decrypted)
 
             if license_data.get('user_id') != user_id:
                 return False, '\u30e6\u30fc\u30b6\u30fcID\u304c\u6b63\u3057\u304f\u3042\u308a\u307e\u305b\u3093\u3002'
