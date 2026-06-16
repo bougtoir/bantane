@@ -1,0 +1,6 @@
+# Windows batch files: keep CRLF and binary (Shift_JIS encoding)
+*.bat binary
+*.vbs binary
+
+# PowerShell: keep CRLF (UTF-8 BOM)
+*.ps1 text eol=crlf
