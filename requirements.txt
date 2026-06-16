@@ -6,3 +6,4 @@ pulp
 openpyxl
 xlrd
 jpholiday
+cryptography

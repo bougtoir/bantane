@@ -66,6 +66,8 @@ pyinstaller --clean --onefile --windowed ^
     --hidden-import=PySide6.QtCore ^
     --hidden-import=PySide6.QtGui ^
     --collect-all=pulp ^
+    --hidden-import=cryptography ^
+    --hidden-import=cryptography.fernet ^
     app.py
 
 if %errorlevel% neq 0 (
