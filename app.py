@@ -6150,103 +6150,44 @@ def ensure_xlrd_installed():
             raise RuntimeError("xlrdのインストールに失敗しました。手動で 'pip install xlrd' を実行してください。")
 
 
-class LicenseManager:
-    """Manages license validation with ID, password, and expiration date"""
-    
-    _KEY = b'ShiftOptimizer2026SecureKey!@#$%'
-    
-    def __init__(self, license_file: Optional[Path] = None):
-        if license_file is None:
-            self.license_file = get_app_dir() / '.license'
-        else:
-            self.license_file = Path(license_file)
-    
-    def _encrypt(self, data: str) -> str:
-        import base64
-        key = self._KEY
-        data_bytes = data.encode('utf-8')
-        encrypted = bytes([data_bytes[i] ^ key[i % len(key)] for i in range(len(data_bytes))])
-        return base64.b64encode(encrypted).decode('utf-8')
-    
-    def _decrypt(self, encrypted_data: str) -> str:
-        import base64
-        key = self._KEY
-        encrypted_bytes = base64.b64decode(encrypted_data.encode('utf-8'))
-        decrypted = bytes([encrypted_bytes[i] ^ key[i % len(key)] for i in range(len(encrypted_bytes))])
-        return decrypted.decode('utf-8')
-    
-    def _hash_password(self, password: str, salt: str) -> str:
-        import hashlib
-        return hashlib.sha256((password + salt).encode('utf-8')).hexdigest()
-    
-    def generate_license(self, user_id: str, password: str, expiration_days: int = 365) -> str:
-        import json
-        import secrets
-        salt = secrets.token_hex(16)
-        password_hash = self._hash_password(password, salt)
-        expiration_date = (dt.datetime.now() + dt.timedelta(days=expiration_days)).strftime('%Y-%m-%d')
-        
-        license_data = {
-            'user_id': user_id,
-            'password_hash': password_hash,
-            'salt': salt,
-            'expiration_date': expiration_date,
-            'created_at': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        
-        encrypted = self._encrypt(json.dumps(license_data))
-        
-        with open(self.license_file, 'w', encoding='utf-8') as f:
-            f.write(encrypted)
-        
-        return str(self.license_file)
-    
-    def validate_license(self, user_id: str, password: str) -> Tuple[bool, str]:
-        import json
-        if not self.license_file.exists():
-            return False, "ライセンスファイルが見つかりません。"
-        
-        try:
-            with open(self.license_file, 'r', encoding='utf-8') as f:
-                encrypted = f.read()
-            
-            decrypted = self._decrypt(encrypted)
-            license_data = json.loads(decrypted)
-            
-            if license_data['user_id'] != user_id:
-                return False, "ユーザーIDが正しくありません。"
-            
-            password_hash = self._hash_password(password, license_data['salt'])
-            if password_hash != license_data['password_hash']:
-                return False, "パスワードが正しくありません。"
-            
-            expiration_date = dt.datetime.strptime(license_data['expiration_date'], '%Y-%m-%d')
-            if dt.datetime.now() > expiration_date:
-                return False, f"ライセンスの有効期限が切れています。（有効期限: {license_data['expiration_date']}）"
-            
-            days_remaining = (expiration_date - dt.datetime.now()).days
-            return True, f"ライセンス認証成功。残り{days_remaining}日有効です。"
-            
-        except Exception as e:
-            return False, f"ライセンスファイルの読み込みに失敗しました: {str(e)}"
+from license_manager import LicenseManager  # noqa: E402
 
 
 class LicenseDialog(QDialog):
-    """License authentication dialog"""
-    
+    """License authentication dialog with machine-ID display."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("ライセンス認証")
-        self.setFixedSize(400, 200)
+        self.setFixedSize(480, 280)
         self.authenticated = False
-        
+
         layout = QVBoxLayout(self)
-        
+
         # Title
         title_label = QLabel("Shift Optimizer - ライセンス認証")
-        title_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-bottom: 10px;")
+        title_label.setStyleSheet(
+            "font-size: 14px; font-weight: bold; margin-bottom: 10px;"
+        )
         layout.addWidget(title_label)
-        
+
+        # Machine ID (read-only, for admin to generate a license)
+        mid_layout = QHBoxLayout()
+        mid_label = QLabel("マシンID:")
+        mid_label.setFixedWidth(100)
+        self.mid_input = QLineEdit()
+        self.mid_input.setReadOnly(True)
+        fp = LicenseManager.get_machine_fingerprint()
+        self.mid_input.setText(fp[:16] + "…")
+        self.mid_input.setToolTip(fp)
+        copy_btn = QPushButton("コピー")
+        copy_btn.setFixedWidth(60)
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(fp))
+        mid_layout.addWidget(mid_label)
+        mid_layout.addWidget(self.mid_input)
+        mid_layout.addWidget(copy_btn)
+        layout.addLayout(mid_layout)
+
         # User ID
         id_layout = QHBoxLayout()
         id_label = QLabel("ユーザーID:")
@@ -6255,7 +6196,7 @@ class LicenseDialog(QDialog):
         id_layout.addWidget(id_label)
         id_layout.addWidget(self.id_input)
         layout.addLayout(id_layout)
-        
+
         # Password
         pw_layout = QHBoxLayout()
         pw_label = QLabel("パスワード:")
@@ -6265,12 +6206,13 @@ class LicenseDialog(QDialog):
         pw_layout.addWidget(pw_label)
         pw_layout.addWidget(self.pw_input)
         layout.addLayout(pw_layout)
-        
-        # Status message
+
+        # Status message (word-wrap for multi-line errors)
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: red;")
+        self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
-        
+
         # Buttons
         btn_layout = QHBoxLayout()
         self.login_btn = QPushButton("認証")
@@ -6280,22 +6222,24 @@ class LicenseDialog(QDialog):
         btn_layout.addWidget(self.login_btn)
         btn_layout.addWidget(self.cancel_btn)
         layout.addLayout(btn_layout)
-        
+
         # Enter key triggers login
         self.pw_input.returnPressed.connect(self.authenticate)
-    
+
     def authenticate(self):
         """Validate license credentials"""
         user_id = self.id_input.text().strip()
         password = self.pw_input.text()
-        
+
         if not user_id or not password:
-            self.status_label.setText("ユーザーIDとパスワードを入力してください。")
+            self.status_label.setText(
+                "ユーザーIDとパスワードを入力してください。"
+            )
             return
-        
+
         manager = LicenseManager()
         is_valid, message = manager.validate_license(user_id, password)
-        
+
         if is_valid:
             self.authenticated = True
             self.status_label.setStyleSheet("color: green;")
