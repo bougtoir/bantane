@@ -861,7 +861,7 @@ def extract_kintai_and_duty_from_kinmu(
             paren_match = _re.search(r'[（(](.+?)[）)]', name)
             if paren_match:
                 disambig_char = paren_match.group(1)
-                name_to_aka[f"{name_short}\x00{disambig_char}"] = aka
+                name_to_aka[f"{name_short}\x00{disambig_char[0]}"] = aka
             if aka not in aka_to_display_name:
                 aka_to_display_name[aka] = name
         # 同姓が1人だけの場合のみ姓単独マッピングを登録
