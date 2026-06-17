@@ -6238,23 +6238,6 @@ class LicenseDialog(QDialog):
         )
         layout.addWidget(title_label)
 
-        # Machine ID (read-only, for admin to generate a license)
-        mid_layout = QHBoxLayout()
-        mid_label = QLabel("マシンID:")
-        mid_label.setFixedWidth(100)
-        self.mid_input = QLineEdit()
-        self.mid_input.setReadOnly(True)
-        fp = LicenseManager.get_machine_fingerprint()
-        self.mid_input.setText(fp[:16] + "…")
-        self.mid_input.setToolTip(fp)
-        copy_btn = QPushButton("コピー")
-        copy_btn.setFixedWidth(60)
-        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(fp))
-        mid_layout.addWidget(mid_label)
-        mid_layout.addWidget(self.mid_input)
-        mid_layout.addWidget(copy_btn)
-        layout.addLayout(mid_layout)
-
         # User ID
         id_layout = QHBoxLayout()
         id_label = QLabel("ユーザーID:")

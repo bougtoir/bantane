@@ -2,17 +2,11 @@
 """管理者用ライセンス発行ツール
 
 使い方:
-    # 現在のPCにライセンスを発行（対話モード）
+    # ライセンスを発行（対話モード）
     python generate_license.py
 
     # コマンドライン引数で指定
     python generate_license.py --user-id admin --password secret123 --days 365
-
-    # 別PCのマシンIDを指定してライセンスを発行
-    python generate_license.py --user-id admin --password secret123 --machine-id abc123...
-
-    # 現在のPCのマシンIDを表示
-    python generate_license.py --show-machine-id
 """
 
 import argparse
@@ -36,29 +30,14 @@ def main():
         help="有効日数（デフォルト: 365日）",
     )
     parser.add_argument(
-        "--machine-id",
-        default=None,
-        help="対象マシンのフィンガープリント（省略時は現在のPC）",
-    )
-    parser.add_argument(
         "--output",
         default=None,
         help="出力先ファイルパス（デフォルト: .license）",
-    )
-    parser.add_argument(
-        "--show-machine-id",
-        action="store_true",
-        help="現在のPCのマシンIDを表示して終了",
     )
     args = parser.parse_args()
 
     # Lazy import so --help works without heavy deps
     from license_manager import LicenseManager
-
-    if args.show_machine_id:
-        fp = LicenseManager.get_machine_fingerprint()
-        print(f"マシンID: {fp}")
-        return
 
     # Interactive mode if required args are missing
     user_id = args.user_id
@@ -81,27 +60,10 @@ def main():
     output_path = Path(args.output) if args.output else None
     manager = LicenseManager(license_file=output_path)
 
-    machine_fp = args.machine_id
-    if not machine_fp:
-        fp = LicenseManager.get_machine_fingerprint()
-        print(f"現在のマシンID: {fp[:16]}...")
-        use_current = input("このPCにバインドしますか？ (Y/n): ").strip().lower()
-        if use_current in ("", "y", "yes"):
-            machine_fp = fp
-        else:
-            machine_fp = input("対象マシンIDを入力: ").strip()
-            if not machine_fp:
-                print(
-                    "エラー: マシンIDを入力してください。",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-
     path = manager.generate_license(
         user_id=user_id,
         password=password,
         expiration_days=args.days,
-        machine_fingerprint=machine_fp,
     )
 
     print()
@@ -111,7 +73,6 @@ def main():
     print(f"  ファイル     : {path}")
     print(f"  ユーザーID   : {user_id}")
     print(f"  有効日数     : {args.days}日")
-    print(f"  マシンID     : {machine_fp[:16]}...")
     print("=" * 50)
     print()
     print("配布手順:")

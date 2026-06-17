@@ -163,9 +163,8 @@ class LicenseManager:
     ) -> str:
         """Create and save a new license file.  Returns the file path.
 
-        If *machine_fingerprint* is ``None`` the current machine's fingerprint
-        is used.  Pass an explicit fingerprint to generate a license for a
-        remote machine (see ``generate_license.py``).
+        Machine fingerprint is stored for informational purposes only;
+        it is NOT checked during validation.
         """
         import json
         import os
@@ -177,15 +176,12 @@ class LicenseManager:
             dt.datetime.now() + dt.timedelta(days=expiration_days)
         ).strftime('%Y-%m-%d')
 
-        fp = machine_fingerprint or self.get_machine_fingerprint()
-
         license_data = {
-            'version': 2,
+            'version': 3,
             'user_id': user_id,
             'password_hash': password_hash,
             'salt': salt_hex,
             'expiration_date': expiration_date,
-            'machine_fingerprint': fp,
             'created_at': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
 
@@ -227,16 +223,7 @@ class LicenseManager:
             if pw_hash != license_data['password_hash']:
                 return False, '\u30d1\u30b9\u30ef\u30fc\u30c9\u304c\u6b63\u3057\u304f\u3042\u308a\u307e\u305b\u3093\u3002'
 
-            # Machine binding check
-            expected_fp = license_data.get('machine_fingerprint')
-            if expected_fp:
-                current_fp = self.get_machine_fingerprint()
-                if current_fp != expected_fp:
-                    return False, (
-                        '\u3053\u306ePC\u306e\u30e9\u30a4\u30bb\u30f3\u30b9\u3067\u306f\u3042\u308a\u307e\u305b\u3093\u3002\n'
-                        '\u7ba1\u7406\u8005\u306b\u73fe\u5728\u306e\u30de\u30b7\u30f3ID \u3092\u304a\u4f1d\u3048\u304f\u3060\u3055\u3044:\n'
-                        f'{current_fp[:16]}...'
-                    )
+            # Machine binding check skipped (v3+: ID+password only)
 
             expiration = dt.datetime.strptime(
                 license_data['expiration_date'], '%Y-%m-%d'
