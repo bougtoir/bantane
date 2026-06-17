@@ -11,15 +11,6 @@ REM Change to script directory
 cd /d "%~dp0"
 echo 実行ディレクトリ: %CD%
 
-REM Activate venv if exists
-if exist "venv\Scripts\activate.bat" (
-    echo venv を有効化しています...
-    call venv\Scripts\activate.bat
-) else if exist "..\venv\Scripts\activate.bat" (
-    echo venv を有効化しています（親フォルダ）...
-    call ..\venv\Scripts\activate.bat
-)
-
 REM Check Python
 where python >nul 2>&1
 if %errorlevel% neq 0 (
@@ -30,29 +21,6 @@ if %errorlevel% neq 0 (
 
 REM Show Python version
 python --version
-
-REM Check cryptography module
-python -c "from cryptography.fernet import Fernet" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [情報] cryptography モジュールが見つかりません。インストールします...
-    echo.
-    if exist "venv\Scripts\activate.bat" (
-        pip install cryptography
-    ) else (
-        echo venv が見つかりません。venv を作成してインストールします...
-        python -m venv venv
-        call venv\Scripts\activate.bat
-        pip install cryptography
-    )
-    echo.
-    python -c "from cryptography.fernet import Fernet" >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo [エラー] cryptography のインストールに失敗しました。
-        goto :end
-    )
-    echo [成功] cryptography をインストールしました。
-    echo.
-)
 
 REM Check if generate_license.py exists
 if not exist "generate_license.py" (
