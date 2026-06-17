@@ -122,10 +122,13 @@ echo.
 echo Output: dist_nuitka\BantaneShiftOptimizer.exe
 echo.
 
-REM Create release folder
+REM Create release folder structure
+echo Creating release folder...
 if not exist "release" mkdir release
-copy /Y dist_nuitka\BantaneShiftOptimizer.exe release\
 if not exist "release\files" mkdir release\files
+
+REM Copy exe
+copy /Y dist_nuitka\BantaneShiftOptimizer.exe release\
 
 REM Copy setting files
 if exist "files\setting*.xlsx" (
@@ -134,16 +137,27 @@ if exist "files\setting*.xlsx" (
     for %%f in (setting*.xlsx) do copy /Y "%%f" release\files\
 )
 
+REM Copy license tools
+if exist "generate_license.bat" copy /Y generate_license.bat release\
+if exist "generate_license.py" copy /Y generate_license.py release\
+if exist "license_manager.py" copy /Y license_manager.py release\
+
 echo.
-echo release\ folder is ready for distribution.
+echo ========================================
+echo   Release folder ready
+echo ========================================
+echo.
+echo release\ contents:
+echo   release\BantaneShiftOptimizer.exe
+echo   release\files\setting*.xlsx
+echo   release\generate_license.bat
+echo   release\generate_license.py
+echo   release\license_manager.py
 echo.
 echo Distribution checklist:
-echo   1. Generate a license for the target PC:
-echo      python generate_license.py
-echo   2. Copy release\BantaneShiftOptimizer.exe
-echo   3. Copy release\files\ (with setting*.xlsx)
-echo   4. Copy the .license file to the same folder as the .exe
-echo   5. Deliver the folder to the end user
+echo   1. Run generate_license.bat to issue a license
+echo   2. Deliver the release\ folder to the end user
+echo   3. Place the .license file in the same folder as the .exe
 echo.
 
 :end

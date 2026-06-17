@@ -2148,13 +2148,29 @@ class Optimizer:
 
             duty_assignment_priority_penalty = float(self.setting.penalty_map.get("duty_priority", {"value": 50}).get("value", 50.0))
             if duty_assignment_priority_penalty > 0 and self.duty_template:
+                def has_pm_duty(member_name: str, date_iso: str) -> bool:
+                    """Check if member has a PM personal duty on the given date"""
+                    for assignment in self.duty_template.assignments:
+                        if assignment['name'] == member_name and assignment['date'] == date_iso:
+                            if assignment['start_time'] >= self.setting.config_map.get('noon', 1230):
+                                return True
+                    return False
+
+                def has_am_duty(member_name: str, date_iso: str) -> bool:
+                    """Check if member has an AM personal duty on the given date"""
+                    for assignment in self.duty_template.assignments:
+                        if assignment['name'] == member_name and assignment['date'] == date_iso:
+                            if assignment['end_time'] <= self.setting.config_map.get('noon', 1230):
+                                return True
+                    return False
+
                 def get_duty_priority_score(member_name: str, date_iso: str, duty_priority_list: List[str]) -> float:
-                    """Get priority score for a member based on their personal duties on a given date.
+                    """Get priority ordering score for a member based on their personal duties.
                     
                     Returns:
-                        0.0 if no personal duty (highest priority - assign first)
-                        0.1 to 1.0 based on duty priority list position (lower = assign earlier)
-                        1.0 if duty is "日通" or not in priority list (assign last)
+                        0.0 if no personal duty
+                        0.1 to 1.0 based on duty priority list position (lower = higher priority)
+                        1.0 if duty not in priority list
                     """
                     member_duties = []
                     for assignment in self.duty_template.assignments:
@@ -2188,8 +2204,10 @@ class Optimizer:
                     wr = w_rows[w]
                     date = self._work_date_to_iso(wr["date"])
                     start_min = int(wr["start_min"])
+                    end_min = int(wr["end_min"])
                     
                     is_am_work = start_min < noon_minutes
+                    work_ends_by_noon = end_min <= noon_minutes
                     
                     if self.jobA is not None:
                         leave_types_A = self.jobA.leave_type_by_date.get(date, {}) if self.jobA.leave_type_by_date else {}
@@ -2201,27 +2219,35 @@ class Optimizer:
                             
                             member_name = self.jobA.aka_to_name.get(a, a)
                             leave_type = leave_types_A.get(a, '')
+                            member_has_pm_duty = has_pm_duty(member_name, date)
+                            member_has_am_duty = has_am_duty(member_name, date)
                             
-                            base_penalty = 0.0
-                            if leave_type == '':
-                                base_penalty = 0.0
-                            elif leave_type == 'P' and is_am_work:
-                                base_penalty = 0.1
-                            elif leave_type == 'A' and not is_am_work:
-                                base_penalty = 0.1
-                            else:
-                                base_penalty = 0.2
-                            
-                            if is_am_work and duty_priority_list_A:
-                                duty_score = get_duty_priority_score(member_name, date, duty_priority_list_A)
-                                total_penalty = base_penalty + duty_score * 0.8
-                            else:
-                                total_penalty = base_penalty
-                            
-                            if total_penalty > 0:
-                                coeff = int(total_penalty * duty_assignment_priority_penalty)
+                            if work_ends_by_noon and member_has_pm_duty:
+                                # REWARD: PM-duty members should be assigned to AM work
+                                duty_score = get_duty_priority_score(member_name, date, duty_priority_list_A) if duty_priority_list_A else 0.5
+                                reward = (1.0 - duty_score * 0.5) * duty_assignment_priority_penalty
+                                coeff = int(reward)
                                 if coeff > 0:
-                                    objective_terms.append(self.x_vars[(w, a)] * coeff)
+                                    objective_terms.append(self.x_vars[(w, a)] * (-coeff))
+                            elif not is_am_work and member_has_am_duty:
+                                # REWARD: AM-duty members should be assigned to PM work
+                                reward = 0.5 * duty_assignment_priority_penalty
+                                coeff = int(reward)
+                                if coeff > 0:
+                                    objective_terms.append(self.x_vars[(w, a)] * (-coeff))
+                            else:
+                                base_penalty = 0.0
+                                if leave_type == 'P' and is_am_work:
+                                    base_penalty = 0.1
+                                elif leave_type == 'A' and not is_am_work:
+                                    base_penalty = 0.1
+                                elif leave_type not in ('', 'D'):
+                                    base_penalty = 0.2
+                                
+                                if base_penalty > 0:
+                                    coeff = int(base_penalty * duty_assignment_priority_penalty)
+                                    if coeff > 0:
+                                        objective_terms.append(self.x_vars[(w, a)] * coeff)
                     
                     if self.jobB is not None:
                         leave_types_B = self.jobB.leave_type_by_date.get(date, {}) if self.jobB.leave_type_by_date else {}
@@ -2233,27 +2259,33 @@ class Optimizer:
                             
                             member_name = self.jobB.aka_to_name.get(b, b)
                             leave_type = leave_types_B.get(b, '')
+                            member_has_pm_duty = has_pm_duty(member_name, date)
+                            member_has_am_duty = has_am_duty(member_name, date)
                             
-                            base_penalty = 0.0
-                            if leave_type == '':
-                                base_penalty = 0.0
-                            elif leave_type == 'P' and is_am_work:
-                                base_penalty = 0.1
-                            elif leave_type == 'A' and not is_am_work:
-                                base_penalty = 0.1
-                            else:
-                                base_penalty = 0.2
-                            
-                            if is_am_work and duty_priority_list_B:
-                                duty_score = get_duty_priority_score(member_name, date, duty_priority_list_B)
-                                total_penalty = base_penalty + duty_score * 0.8
-                            else:
-                                total_penalty = base_penalty
-                            
-                            if total_penalty > 0:
-                                coeff = int(total_penalty * duty_assignment_priority_penalty)
+                            if work_ends_by_noon and member_has_pm_duty:
+                                duty_score = get_duty_priority_score(member_name, date, duty_priority_list_B) if duty_priority_list_B else 0.5
+                                reward = (1.0 - duty_score * 0.5) * duty_assignment_priority_penalty
+                                coeff = int(reward)
                                 if coeff > 0:
-                                    objective_terms.append(self.y_vars[(w, b)] * coeff)
+                                    objective_terms.append(self.y_vars[(w, b)] * (-coeff))
+                            elif not is_am_work and member_has_am_duty:
+                                reward = 0.5 * duty_assignment_priority_penalty
+                                coeff = int(reward)
+                                if coeff > 0:
+                                    objective_terms.append(self.y_vars[(w, b)] * (-coeff))
+                            else:
+                                base_penalty = 0.0
+                                if leave_type == 'P' and is_am_work:
+                                    base_penalty = 0.1
+                                elif leave_type == 'A' and not is_am_work:
+                                    base_penalty = 0.1
+                                elif leave_type not in ('', 'D'):
+                                    base_penalty = 0.2
+                                
+                                if base_penalty > 0:
+                                    coeff = int(base_penalty * duty_assignment_priority_penalty)
+                                    if coeff > 0:
+                                        objective_terms.append(self.y_vars[(w, b)] * coeff)
 
             if objective_terms:
                 self.model += pulp.lpSum(objective_terms), "Objective"
@@ -2289,16 +2321,6 @@ class Optimizer:
         diff_penalty = float(self.setting.penalty_map.get("diff", {"value": 1}).get("value", 1.0))
         penalty_terms = []
 
-        def count_duty_assignments(member_name):
-            """Count duty template assignments for a member"""
-            if not self.duty_template:
-                return 0
-            count = 0
-            for assignment in self.duty_template.assignments:
-                if assignment['name'] == member_name:
-                    count += 1
-            return count
-
         if self.jobA is not None:
             load_groups_A = {}
             for a in A_list:
@@ -2320,17 +2342,9 @@ class Optimizer:
                                 self.x_vars[(w, a2)] for w in W if (w, a2) in self.x_vars
                             ])
 
-                            member1_name = self.jobA.aka_to_name.get(a1, a1)
-                            member2_name = self.jobA.aka_to_name.get(a2, a2)
-                            duty1_count = count_duty_assignments(member1_name)
-                            duty2_count = count_duty_assignments(member2_name)
-
-                            work1_total = work1_opt + duty1_count
-                            work2_total = work2_opt + duty2_count
-
-                            diff_var = pulp.LpVariable(f"diff_A_{a1}_{a2}", lowBound=0, upBound=len(W) + max(duty1_count, duty2_count), cat=pulp.LpInteger)
-                            self.model += work1_total - work2_total <= diff_var, f"diff_A_{a1}_{a2}_upper"
-                            self.model += work2_total - work1_total <= diff_var, f"diff_A_{a1}_{a2}_lower"
+                            diff_var = pulp.LpVariable(f"diff_A_{a1}_{a2}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
+                            self.model += work1_opt - work2_opt <= diff_var, f"diff_A_{a1}_{a2}_upper"
+                            self.model += work2_opt - work1_opt <= diff_var, f"diff_A_{a1}_{a2}_lower"
                             penalty_terms.append(diff_var * diff_penalty)
 
         if self.jobB is not None:
@@ -2354,17 +2368,9 @@ class Optimizer:
                                 self.y_vars[(w, b2)] for w in W if (w, b2) in self.y_vars
                             ])
 
-                            member1_name = self.jobB.aka_to_name.get(b1, b1)
-                            member2_name = self.jobB.aka_to_name.get(b2, b2)
-                            duty1_count = count_duty_assignments(member1_name)
-                            duty2_count = count_duty_assignments(member2_name)
-
-                            work1_total = work1_opt + duty1_count
-                            work2_total = work2_opt + duty2_count
-
-                            diff_var = pulp.LpVariable(f"diff_B_{b1}_{b2}", lowBound=0, upBound=len(W) + max(duty1_count, duty2_count), cat=pulp.LpInteger)
-                            self.model += work1_total - work2_total <= diff_var, f"diff_B_{b1}_{b2}_upper"
-                            self.model += work2_total - work1_total <= diff_var, f"diff_B_{b1}_{b2}_lower"
+                            diff_var = pulp.LpVariable(f"diff_B_{b1}_{b2}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
+                            self.model += work1_opt - work2_opt <= diff_var, f"diff_B_{b1}_{b2}_upper"
+                            self.model += work2_opt - work1_opt <= diff_var, f"diff_B_{b1}_{b2}_lower"
                             penalty_terms.append(diff_var * diff_penalty)
 
         dept_penalty = float(self.setting.penalty_map.get("diff", {"value": 1}).get("value", 1.0))
