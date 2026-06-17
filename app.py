@@ -1088,6 +1088,25 @@ class Setting:
                 if duty_name:
                     self.duty_priority_B.append(duty_name)
 
+    def get_reserve_names(self) -> Set[str]:
+        """Return display names of all reserve (dummy) staff from jobA/jobB."""
+        reserve_names: Set[str] = set()
+        for job_df, dict_df in [(self.jobA_df, self.dictA_df), (self.jobB_df, self.dictB_df)]:
+            if job_df is None or 'load' not in job_df.columns:
+                continue
+            reserve_akas = set()
+            for _, r in job_df.iterrows():
+                if str(r.get('load', '')).strip().lower() == 'reserve':
+                    reserve_akas.add(str(r['aka']).strip())
+            if dict_df is not None and 'aka' in dict_df.columns and 'name' in dict_df.columns:
+                for _, r in dict_df.iterrows():
+                    aka = str(r['aka']).strip()
+                    if aka in reserve_akas:
+                        name = str(r['name']).strip()
+                        if name and name.lower() != 'nan':
+                            reserve_names.add(name)
+        return reserve_names
+
 
 class JobData:
     def __init__(self, path: Path, role_prefix: str, target_year: int, target_month: int, kintai_path: Optional[Path] = None, output_dir: Optional[Path] = None):
@@ -4036,7 +4055,7 @@ def apply_calendar_formatting(ws, all_dates, target_year: int, target_month: int
         cell_a1.font = Font(color="FFFFFF")
 
 
-BANTANE_PREFIX = "ばんたね"
+_RESERVE_NAMES: Set[str] = set()
 
 WORD_JOINER = '\u2060'
 
@@ -4056,9 +4075,15 @@ def protect_text_for_excel(text: str, separator: str = ', ') -> str:
     return separator.join(protected_names)
 
 
+def set_reserve_names(names: Set[str]):
+    """Set the global reserve (dummy) staff names from setting load='reserve'."""
+    global _RESERVE_NAMES
+    _RESERVE_NAMES = names
+
+
 def is_bantane_name(name: str) -> bool:
-    """Check if a name is a bantane (dummy) staff name."""
-    return name.strip().startswith(BANTANE_PREFIX)
+    """Check if a name is a reserve (dummy) staff name."""
+    return name.strip() in _RESERVE_NAMES
 
 
 def filter_bantane_from_text(text: str, separator: str = ",") -> str:
@@ -5250,6 +5275,7 @@ class MainWindow(QWidget):
 
             self._set_progress(20, "データを読み込み中...")
             setting = Setting(self.setting_path)
+            set_reserve_names(setting.get_reserve_names())
             work = WorkData.from_setting(setting, target_year, target_month)
             # generated_shift_A/Bはtemporaryフォルダに出力
             temporary_dir = self.output_path.parent.parent / "temporary" if self.output_path else Path.cwd() / "temporary"
@@ -5679,6 +5705,7 @@ class MainWindow(QWidget):
             self._set_progress(20, "設定データを読み込み中...")
             if self.setting_path:
                 setting = Setting(self.setting_path)
+                set_reserve_names(setting.get_reserve_names())
                 work = WorkData.from_setting(setting, target_year, target_month)
                 # generated_shift_A/Bはtemporaryフォルダに出力
                 temporary_dir = self.output_path.parent.parent / "temporary" if self.output_path else Path.cwd() / "temporary"
@@ -5979,6 +6006,7 @@ class MainWindow(QWidget):
         
         try:
             setting = Setting(self.setting_path)
+            set_reserve_names(setting.get_reserve_names())
         except Exception as e:
             errors.append(f"settingファイルの読み込みに失敗しました: {str(e)}")
             QMessageBox.critical(self, "設定エラー", "\n".join(errors))
@@ -6111,6 +6139,7 @@ class MainWindow(QWidget):
         """
         try:
             setting = Setting(self.setting_path)
+            set_reserve_names(setting.get_reserve_names())
             target_year, target_month = self._compute_target_period()
             
             members_df_list = []
