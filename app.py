@@ -6297,11 +6297,16 @@ class MainWindow(QWidget):
             
             if unknown_members:
                 unique_unknown = list(dict.fromkeys(unknown_members))
-                warning_msg = f"settingファイルで定義されていないメンバーが含まれています（{', '.join(unique_unknown[:10])}）。これらのメンバーは無視されます"
+                names = '、'.join(unique_unknown[:10])
                 if len(unique_unknown) > 10:
-                    warning_msg += f" ...他{len(unique_unknown) - 10}名"
-                self.append_log(f"警告: {warning_msg}")
-                logging.warning(warning_msg)
+                    names += f"（他{len(unique_unknown) - 10}名）"
+                QMessageBox.warning(
+                    self, "未登録スタッフ",
+                    f"{names}さんの勤務条件が設定されていません。\n"
+                    "setting.xlsxのjobA/jobB・dictA/dictB・orderA/orderBシートを\n"
+                    "更新してアプリを再起動してください。"
+                )
+                return
             
             date_row = df.iloc[3]
             target_year, target_month = self._compute_target_period()
