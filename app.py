@@ -2296,14 +2296,57 @@ class Optimizer:
                 if self.jobB is not None:
                     reserve_akas_B = {b for b in B_list if self.jobB.load.get(b, "normal") == "reserve"}
 
-                coeff = int(dummy_penalty_value)
-                if coeff > 0:
-                    for (w, a), var in self.x_vars.items():
-                        if a in reserve_akas_A:
-                            objective_terms.append(var * coeff)
-                    for (w, b), var in self.y_vars.items():
-                        if b in reserve_akas_B:
-                            objective_terms.append(var * coeff)
+                real_akas_A = set(A_list) - reserve_akas_A
+                real_akas_B = set(B_list) - reserve_akas_B
+
+                # Build avoid lookup per member
+                avoid_tokens_A = {}
+                if self.jobA is not None:
+                    for _, row in self.jobA.members.iterrows():
+                        aka = str(row["aka"])
+                        avoid_tokens_A[aka] = row.get("avoid_tokens", set()) if "avoid_tokens" in row.index else set()
+                avoid_tokens_B = {}
+                if self.jobB is not None:
+                    for _, row in self.jobB.members.iterrows():
+                        aka = str(row["aka"])
+                        avoid_tokens_B[aka] = row.get("avoid_tokens", set()) if "avoid_tokens" in row.index else set()
+
+                coeff_base = int(dummy_penalty_value)
+                # Much higher penalty when real non-avoid candidates exist
+                coeff_strong = coeff_base * 100
+                for w in W:
+                    wr = w_rows[w]
+                    room = str(wr.get("room", ""))
+                    dept = str(wr.get("dept", ""))
+
+                    # Count real candidates (has var and no avoid)
+                    has_real_candidate_A = False
+                    for a in real_akas_A:
+                        if (w, a) in self.x_vars:
+                            m_avoid = avoid_tokens_A.get(a, set())
+                            if room not in m_avoid and dept not in m_avoid and f"W{w}" not in m_avoid:
+                                has_real_candidate_A = True
+                                break
+
+                    has_real_candidate_B = False
+                    for b in real_akas_B:
+                        if (w, b) in self.y_vars:
+                            m_avoid = avoid_tokens_B.get(b, set())
+                            if room not in m_avoid and dept not in m_avoid and f"W{w}" not in m_avoid:
+                                has_real_candidate_B = True
+                                break
+
+                    # Apply strong penalty when real candidates exist, base penalty otherwise
+                    for a in reserve_akas_A:
+                        if (w, a) in self.x_vars:
+                            c = coeff_strong if has_real_candidate_A else coeff_base
+                            if c > 0:
+                                objective_terms.append(self.x_vars[(w, a)] * c)
+                    for b in reserve_akas_B:
+                        if (w, b) in self.y_vars:
+                            c = coeff_strong if has_real_candidate_B else coeff_base
+                            if c > 0:
+                                objective_terms.append(self.y_vars[(w, b)] * c)
 
             if objective_terms:
                 self.model += pulp.lpSum(objective_terms), "Objective"
