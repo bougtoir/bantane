@@ -4036,8 +4036,7 @@ def apply_calendar_formatting(ws, all_dates, target_year: int, target_month: int
         cell_a1.font = Font(color="FFFFFF")
 
 
-BANTANE_NAMES = {"ばんたね１", "ばんたね２", "ばんたね３", "ばんたね４", "ばんたね５",
-                 "ばんたね６", "ばんたね７", "ばんたね８", "ばんたね９", "ばんたね１０"}
+BANTANE_PREFIX = "ばんたね"
 
 WORD_JOINER = '\u2060'
 
@@ -4059,7 +4058,7 @@ def protect_text_for_excel(text: str, separator: str = ', ') -> str:
 
 def is_bantane_name(name: str) -> bool:
     """Check if a name is a bantane (dummy) staff name."""
-    return name.strip() in BANTANE_NAMES
+    return name.strip().startswith(BANTANE_PREFIX)
 
 
 def filter_bantane_from_text(text: str, separator: str = ",") -> str:
@@ -4537,18 +4536,54 @@ def generate_weekly_gantt_images(assign_df: pd.DataFrame, output_path: Path, tar
                 dept_display = work_data.dept_name.get(r['dept'], r['dept']) if work_data else r['dept']
 
                 line1 = f'ID:{r["id"]} 部署:{dept_display}'
-                line2 = f'職種1:{r["assign_A"]}' if r["assign_A"] and str(r["assign_A"]).strip() and str(r["assign_A"]) != 'nan' else ''
-                line3 = f'職種2:{r["assign_B"]}' if r["assign_B"] and str(r["assign_B"]).strip() and str(r["assign_B"]) != 'nan' else ''
+                assign_A_str = str(r["assign_A"]).strip() if r["assign_A"] and str(r["assign_A"]).strip() and str(r["assign_A"]) != 'nan' else ''
+                assign_B_str = str(r["assign_B"]).strip() if r["assign_B"] and str(r["assign_B"]).strip() and str(r["assign_B"]) != 'nan' else ''
 
                 line_spacing = bar_height / 4
                 ax.text(start_hour + duration/2, y_pos + line_spacing, line1,
                        ha='center', va='center', fontsize=font_size, color='black', weight='bold')
-                if line2:
-                    ax.text(start_hour + duration/2, y_pos, line2,
-                           ha='center', va='center', fontsize=font_size, color='black', weight='bold')
-                if line3:
-                    ax.text(start_hour + duration/2, y_pos - line_spacing, line3,
-                           ha='center', va='center', fontsize=font_size, color='black', weight='bold')
+
+                def _render_assign_line(ax, x, y, prefix, assign_str, fontsize):
+                    """Render assignment line with bantane names in red."""
+                    if not assign_str:
+                        return
+                    names = [n.strip() for n in assign_str.split(',')]
+                    has_bantane = any(is_bantane_name(n) for n in names)
+                    if not has_bantane:
+                        ax.text(x, y, f'{prefix}{assign_str}',
+                               ha='center', va='center', fontsize=fontsize, color='black', weight='bold')
+                    else:
+                        # Render prefix + non-bantane names in black, bantane names in red
+                        parts = []
+                        for n in names:
+                            parts.append((n, 'red' if is_bantane_name(n) else 'black'))
+                        full_text = f'{prefix}' + ','.join(n for n, _ in parts)
+                        # Use centered text with colored segments via individual text calls
+                        # First render invisible full text to get centering, then overlay colored parts
+                        txt_obj = ax.text(x, y, full_text,
+                                         ha='center', va='center', fontsize=fontsize, color='black', weight='bold', alpha=0)
+                        renderer = ax.figure.canvas.get_renderer()
+                        bbox = txt_obj.get_window_extent(renderer=renderer)
+                        inv = ax.transData.inverted()
+                        left_data, _ = inv.transform((bbox.x0, bbox.y0))
+                        # Render from left
+                        cursor_x = left_data
+                        segments = [(prefix, 'black')]
+                        for i, (n, c) in enumerate(parts):
+                            segments.append((n, c))
+                            if i < len(parts) - 1:
+                                segments.append((',', 'black'))
+                        for seg_text, seg_color in segments:
+                            t = ax.text(cursor_x, y, seg_text,
+                                       ha='left', va='center', fontsize=fontsize, color=seg_color, weight='bold')
+                            seg_bbox = t.get_window_extent(renderer=renderer)
+                            seg_width_data = inv.transform((seg_bbox.x1, 0))[0] - inv.transform((seg_bbox.x0, 0))[0]
+                            cursor_x += seg_width_data
+
+                if assign_A_str:
+                    _render_assign_line(ax, start_hour + duration/2, y_pos, '職種1:', assign_A_str, font_size)
+                if assign_B_str:
+                    _render_assign_line(ax, start_hour + duration/2, y_pos - line_spacing, '職種2:', assign_B_str, font_size)
 
             ax.set_xlim(6, 20)
             ax.set_xticks(range(6, 21))
