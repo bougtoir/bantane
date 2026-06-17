@@ -558,6 +558,17 @@ def derive_shift_from_kintai(kintai_df: pd.DataFrame, members_df: pd.DataFrame,
     extra_aka = kintai_aka - all_members_aka
     if extra_aka:
         logging.warning(f"kintaiファイルに未知のaka: {', '.join(sorted(extra_aka))}")
+        # Resolve aka to display names for GUI warning
+        for aka in sorted(extra_aka):
+            rows = kintai_df[kintai_df['aka'].astype(str) == aka]
+            if not rows.empty and 'name' in kintai_df.columns:
+                name = str(rows.iloc[0]['name']).strip()
+                if name and name.lower() != 'nan':
+                    _UNREGISTERED_STAFF.append(name)
+                else:
+                    _UNREGISTERED_STAFF.append(aka)
+            else:
+                _UNREGISTERED_STAFF.append(aka)
     
     # load列からreserve（ダミー）スタッフを特定
     reserve_aka = set()
@@ -4056,6 +4067,7 @@ def apply_calendar_formatting(ws, all_dates, target_year: int, target_month: int
 
 
 _RESERVE_NAMES: Set[str] = set()
+_UNREGISTERED_STAFF: List[str] = []
 
 WORD_JOINER = '\u2060'
 
@@ -5280,12 +5292,22 @@ class MainWindow(QWidget):
             # generated_shift_A/Bはtemporaryフォルダに出力
             temporary_dir = self.output_path.parent.parent / "temporary" if self.output_path else Path.cwd() / "temporary"
             temporary_dir.mkdir(parents=True, exist_ok=True)
+            _UNREGISTERED_STAFF.clear()
             jobA = JobData.from_setting(setting, "A", target_year, target_month,
                          kintai_path=self.kintai_A_path if hasattr(self, 'kintai_A_path') else None,
                          output_dir=temporary_dir)
             jobB = JobData.from_setting(setting, "B", target_year, target_month,
                          kintai_path=self.kintai_B_path if hasattr(self, 'kintai_B_path') else None,
                          output_dir=temporary_dir)
+            if _UNREGISTERED_STAFF:
+                names = '、'.join(dict.fromkeys(_UNREGISTERED_STAFF))
+                QMessageBox.warning(
+                    self, "未登録スタッフ",
+                    f"{names}さんの勤務条件が設定されていません。\n"
+                    "setting.xlsxのjobA/jobBシートを更新してアプリを再起動してください。"
+                )
+                _UNREGISTERED_STAFF.clear()
+                return
             duty_template = DutyTemplate(self.duty_path, target_year, target_month) if self.duty_path else None
 
             self._set_progress(30, "最適化モデルを構築中...")
