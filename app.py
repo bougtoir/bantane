@@ -2535,11 +2535,176 @@ class Optimizer:
 
         return penalty_terms
 
+    # ------------------------------------------------------------------
+    # Post-processing: greedily swap dummy assignments to real staff
+    # ------------------------------------------------------------------
+    def post_process_reduce_dummy(self):
+        """After solving, try to replace dummy (reserve) staff with real staff.
+
+        For every work item assigned to a dummy, look for a real staff member
+        who is available, has no avoid conflict, no time overlap with their
+        current assignments or personal duties, and swap them in.
+
+        Stores overrides in ``self._assignment_overrides`` which
+        ``extract_output`` will consult.
+        """
+        self._assignment_overrides: Dict[tuple, int] = {}  # (w, aka) -> 0 or 1
+
+        if self.jobA is None and self.jobB is None:
+            return
+
+        Wdf = self.work.work.copy()
+        w_rows = {int(r["id"]): r for _, r in Wdf.iterrows()}
+        W = list(Wdf["id"].astype(int))
+
+        min_interval = self.min_interval
+
+        def time_overlaps(s1, e1, s2, e2):
+            return not (e1 + min_interval <= s2 or e2 + min_interval <= s1)
+
+        def _get_duty_intervals(member_name, date_iso):
+            intervals = []
+            if self.duty_template:
+                for a in self.duty_template.get_assignments_for_date(date_iso):
+                    if a['name'] == member_name:
+                        intervals.append((hhmm_to_minutes(a['start_time']),
+                                          hhmm_to_minutes(a['end_time'])))
+            return intervals
+
+        def _solved_value(var_dict, key):
+            """Return effective assignment value considering overrides."""
+            if key in self._assignment_overrides:
+                return self._assignment_overrides[key]
+            var = var_dict.get(key)
+            if var is None:
+                return 0
+            return 1 if pulp.value(var) == 1 else 0
+
+        # Process each job type (A and B) independently
+        for job, var_dict, role_label in [
+            (self.jobA, self.x_vars, "A"),
+            (self.jobB, self.y_vars, "B"),
+        ]:
+            if job is None:
+                continue
+
+            all_akas = list(job.members["aka"])
+            reserve_akas = {a for a in all_akas if job.load.get(a, "normal") == "reserve"}
+            real_akas = [a for a in all_akas if a not in reserve_akas]
+
+            if not reserve_akas:
+                continue
+
+            # Build current assignments per staff: aka -> list of (work_id, start_min, end_min, date_iso)
+            staff_assignments: Dict[str, List[tuple]] = {a: [] for a in all_akas}
+            for w in W:
+                wr = w_rows[w]
+                for a in all_akas:
+                    if _solved_value(var_dict, (w, a)) == 1:
+                        staff_assignments[a].append((
+                            w,
+                            int(wr["start_min"]),
+                            int(wr["end_min"]),
+                            self._work_date_to_iso(wr["date"]),
+                        ))
+
+            # Collect dummy assignments
+            dummy_assignments = []
+            for w in W:
+                wr = w_rows[w]
+                date_iso = self._work_date_to_iso(wr["date"])
+                for d_aka in reserve_akas:
+                    if _solved_value(var_dict, (w, d_aka)) == 1:
+                        dummy_assignments.append((w, d_aka, date_iso))
+
+            if not dummy_assignments:
+                continue
+
+            # Build avoid tokens per member
+            avoid_map = {}
+            for _, row in job.members.iterrows():
+                aka = str(row["aka"])
+                avoid_map[aka] = row.get("avoid_tokens", set()) if "avoid_tokens" in row.index else set()
+
+            swapped = 0
+            for w, d_aka, date_iso in dummy_assignments:
+                wr = w_rows[w]
+                w_start = int(wr["start_min"])
+                w_end = int(wr["end_min"])
+                w_room = str(wr["room"])
+                w_dept = str(wr["dept"])
+
+                best_candidate = None
+                best_load = float('inf')
+
+                for r_aka in real_akas:
+                    # 1. Available on this date?
+                    if r_aka not in job.avail_by_date.get(date_iso, set()):
+                        continue
+
+                    # 2. Leave type check
+                    leave = job.leave_type_by_date.get(date_iso, {}).get(r_aka, '')
+                    if leave == '1':
+                        continue
+                    noon = hhmm_to_minutes(self.setting.config_map.get("noon", 1230))
+                    if leave == 'A' and w_start < noon:
+                        continue
+                    if leave == 'P' and w_end > noon:
+                        continue
+
+                    # 3. Avoid constraint?
+                    m_avoid = avoid_map.get(r_aka, set())
+                    if w_room in m_avoid or w_dept in m_avoid or f"W{w}" in m_avoid:
+                        continue
+
+                    # 4. Time overlap with current assignments?
+                    conflict = False
+                    for (aw, a_start, a_end, a_date) in staff_assignments[r_aka]:
+                        if a_date == date_iso and time_overlaps(w_start, w_end, a_start, a_end):
+                            conflict = True
+                            break
+                    if conflict:
+                        continue
+
+                    # 5. Duty conflict?
+                    member_name = job.aka_to_name.get(r_aka, r_aka)
+                    duty_intervals = _get_duty_intervals(member_name, date_iso)
+                    for d_start, d_end in duty_intervals:
+                        if time_overlaps(w_start, w_end, d_start, d_end):
+                            conflict = True
+                            break
+                    if conflict:
+                        continue
+
+                    # Pick candidate with fewest current assignments (balance load)
+                    load = len(staff_assignments[r_aka])
+                    if load < best_load:
+                        best_load = load
+                        best_candidate = r_aka
+
+                if best_candidate is not None:
+                    # Swap: remove dummy, add real
+                    self._assignment_overrides[(w, d_aka)] = 0
+                    self._assignment_overrides[(w, best_candidate)] = 1
+                    # Update tracking
+                    staff_assignments[d_aka] = [
+                        x for x in staff_assignments[d_aka] if x[0] != w
+                    ]
+                    staff_assignments[best_candidate].append(
+                        (w, w_start, w_end, date_iso)
+                    )
+                    swapped += 1
+
+            if swapped > 0:
+                logging.info(f"ポスト処理: {role_label}のダミー割当を{swapped}件、実スタッフに置換しました")
+
     def extract_output(self):
         rows_assign = []
         rows_available = []
         rows_stats = []
         rows_violation = self._extract_violations()
+
+        overrides = getattr(self, '_assignment_overrides', {})
 
         Wdf = self.work.work.copy()
         for _, wr in Wdf.iterrows():
@@ -2558,14 +2723,24 @@ class Optimizer:
 
             if self.jobA is not None:
                 for a in list(self.jobA.members["aka"]):
-                    var = self.x_vars.get((w, a))
-                    if var is not None and pulp.value(var) == 1:
-                        assA_names.append(self.jobA.aka_to_name.get(a, a))
+                    key = (w, a)
+                    if key in overrides:
+                        if overrides[key] == 1:
+                            assA_names.append(self.jobA.aka_to_name.get(a, a))
+                    else:
+                        var = self.x_vars.get(key)
+                        if var is not None and pulp.value(var) == 1:
+                            assA_names.append(self.jobA.aka_to_name.get(a, a))
             if self.jobB is not None:
                 for b in list(self.jobB.members["aka"]):
-                    var = self.y_vars.get((w, b))
-                    if var is not None and pulp.value(var) == 1:
-                        assB_names.append(self.jobB.aka_to_name.get(b, b))
+                    key = (w, b)
+                    if key in overrides:
+                        if overrides[key] == 1:
+                            assB_names.append(self.jobB.aka_to_name.get(b, b))
+                    else:
+                        var = self.y_vars.get(key)
+                        if var is not None and pulp.value(var) == 1:
+                            assB_names.append(self.jobB.aka_to_name.get(b, b))
 
             rows_assign.append(
                 {
@@ -2602,9 +2777,13 @@ class Optimizer:
 
                     assigned_work = []
                     for _, wr in date_work.iterrows():
-                        var = self.x_vars.get((int(wr["id"]), a))
-                        var_value = pulp.value(var) if var is not None else 0
-                        if var_value == 1:
+                        key = (int(wr["id"]), a)
+                        if key in overrides:
+                            val = overrides[key]
+                        else:
+                            var = self.x_vars.get(key)
+                            val = 1 if var is not None and pulp.value(var) == 1 else 0
+                        if val == 1:
                             start_min = int(wr["start_min"])
                             end_min = int(wr["end_min"])
                             assigned_work.append((start_min, end_min))
@@ -2639,9 +2818,13 @@ class Optimizer:
 
                     assigned_work = []
                     for _, wr in date_work.iterrows():
-                        var = self.y_vars.get((int(wr["id"]), b))
-                        var_value = pulp.value(var) if var is not None else 0
-                        if var_value == 1:
+                        key = (int(wr["id"]), b)
+                        if key in overrides:
+                            val = overrides[key]
+                        else:
+                            var = self.y_vars.get(key)
+                            val = 1 if var is not None and pulp.value(var) == 1 else 0
+                        if val == 1:
                             start_min = int(wr["start_min"])
                             end_min = int(wr["end_min"])
                             assigned_work.append((start_min, end_min))
@@ -2771,9 +2954,13 @@ class Optimizer:
                 member_name = self.jobA.aka_to_name.get(a, a)
                 opt_id_list = []
                 for _, wr in Wdf.iterrows():
-                    var = self.x_vars.get((int(wr["id"]), a))
-                    var_value = pulp.value(var) if var is not None else 0
-                    if var_value == 1:
+                    key = (int(wr["id"]), a)
+                    if key in overrides:
+                        val = overrides[key]
+                    else:
+                        var = self.x_vars.get(key)
+                        val = 1 if var is not None and pulp.value(var) == 1 else 0
+                    if val == 1:
                         opt_id_list.append((wr["date"], wr["start_min"], str(int(wr["id"]))))
                 
                 duty_list = duty_ids_by_member.get(member_name, [])
@@ -2796,9 +2983,13 @@ class Optimizer:
                 member_name = self.jobB.aka_to_name.get(b, b)
                 opt_id_list = []
                 for _, wr in Wdf.iterrows():
-                    var = self.y_vars.get((int(wr["id"]), b))
-                    var_value = pulp.value(var) if var is not None else 0
-                    if var_value == 1:
+                    key = (int(wr["id"]), b)
+                    if key in overrides:
+                        val = overrides[key]
+                    else:
+                        var = self.y_vars.get(key)
+                        val = 1 if var is not None and pulp.value(var) == 1 else 0
+                    if val == 1:
                         opt_id_list.append((wr["date"], wr["start_min"], str(int(wr["id"]))))
                 
                 duty_list = duty_ids_by_member.get(member_name, [])
@@ -5361,6 +5552,8 @@ class MainWindow(QWidget):
                 QMessageBox.critical(self, "実行不能エラー", msg)
                 return
 
+            self._set_progress(65, "ダミー割当を最適化中...")
+            opt.post_process_reduce_dummy()
             self._set_progress(70, "結果を抽出中...")
             assign_df, available_A_df, available_B_df, stats_df, violation_df = opt.extract_output()
             
