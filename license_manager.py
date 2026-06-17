@@ -86,14 +86,57 @@ class LicenseManager:
     def get_machine_fingerprint() -> str:
         """Return a stable fingerprint for the current machine.
 
-        Combines hostname, MAC address, and (on Windows) the system drive
-        volume serial number.  The result is a hex SHA-256 digest.
+        Combines hostname, all physical MAC addresses (sorted), and
+        (on Windows) the system drive volume serial number.
+        The result is a hex SHA-256 digest.
+
+        Note: Uses all MAC addresses sorted to ensure deterministic results
+        regardless of NIC enumeration order (uuid.getnode() can be
+        non-deterministic when multiple NICs exist).
         """
         import socket
-        import uuid as _uuid
         parts: List[str] = []
         parts.append(socket.gethostname())
-        parts.append(str(_uuid.getnode()))  # MAC address as int
+
+        # Collect all MAC addresses deterministically
+        mac_addresses: List[str] = []
+        if platform.system() == 'Windows':
+            try:
+                import subprocess as _sp
+                out = _sp.check_output(
+                    'getmac /FO CSV /NH',
+                    shell=True, text=True, stderr=_sp.DEVNULL
+                )
+                for line in out.strip().splitlines():
+                    # Each line: "AA-BB-CC-DD-EE-FF","...","..."
+                    cols = line.split(',')
+                    if cols:
+                        mac = cols[0].strip().strip('"')
+                        if mac and mac != 'N/A' and '-' in mac:
+                            mac_addresses.append(mac.upper())
+            except Exception:
+                pass
+        else:
+            try:
+                import subprocess as _sp
+                out = _sp.check_output(
+                    ['ip', 'link', 'show'],
+                    text=True, stderr=_sp.DEVNULL
+                )
+                import re
+                for m in re.finditer(r'link/ether\s+([0-9a-fA-F:]{17})', out):
+                    mac_addresses.append(m.group(1).upper())
+            except Exception:
+                pass
+
+        if not mac_addresses:
+            # Fallback to uuid.getnode() if no MACs found
+            import uuid as _uuid
+            mac_addresses.append(str(_uuid.getnode()))
+
+        mac_addresses.sort()
+        parts.append('|'.join(mac_addresses))
+
         if platform.system() == 'Windows':
             try:
                 import subprocess as _sp
