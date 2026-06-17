@@ -2287,6 +2287,24 @@ class Optimizer:
                                     if coeff > 0:
                                         objective_terms.append(self.y_vars[(w, b)] * coeff)
 
+            dummy_penalty_value = float(self.setting.penalty_map.get("dummy", {"value": 10}).get("value", 10.0))
+            if include_reserve and dummy_penalty_value > 0:
+                reserve_akas_A = set()
+                reserve_akas_B = set()
+                if self.jobA is not None:
+                    reserve_akas_A = {a for a in A_list if self.jobA.load.get(a, "normal") == "reserve"}
+                if self.jobB is not None:
+                    reserve_akas_B = {b for b in B_list if self.jobB.load.get(b, "normal") == "reserve"}
+
+                coeff = int(dummy_penalty_value)
+                if coeff > 0:
+                    for (w, a), var in self.x_vars.items():
+                        if a in reserve_akas_A:
+                            objective_terms.append(var * coeff)
+                    for (w, b), var in self.y_vars.items():
+                        if b in reserve_akas_B:
+                            objective_terms.append(var * coeff)
+
             if objective_terms:
                 self.model += pulp.lpSum(objective_terms), "Objective"
 
