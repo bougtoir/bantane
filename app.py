@@ -5304,7 +5304,8 @@ class MainWindow(QWidget):
                 QMessageBox.warning(
                     self, "未登録スタッフ",
                     f"{names}さんの勤務条件が設定されていません。\n"
-                    "setting.xlsxのjobA/jobBシートを更新してアプリを再起動してください。"
+                    "setting.xlsxのjobA/jobBシートとdictA/dictBシートを更新して\n"
+                    "アプリを再起動してください。"
                 )
                 _UNREGISTERED_STAFF.clear()
                 return
