@@ -81,29 +81,43 @@ echo ========================================
 echo   ビルド完了！
 echo ========================================
 echo.
-echo 生成されたexeファイル:
-echo   dist\BantaneShiftOptimizer.exe
-echo.
-echo 配布手順:
-echo   1. 新しいフォルダを作成
-echo   2. dist\BantaneShiftOptimizer.exe をコピー
-echo   3. files\ フォルダをコピー（setting*.xlsx を含む）
-echo   4. フォルダごと配布先に渡す
-echo.
 
-REM Create distribution folder
+REM Create release folder structure
+echo 配布用フォルダを作成しています...
 if not exist "release" mkdir release
-copy /Y dist\BantaneShiftOptimizer.exe release\
 if not exist "release\files" mkdir release\files
-REM settingファイルをコピー（リポジトリ直下またはfiles/から探す）
+
+REM Copy exe
+copy /Y dist\BantaneShiftOptimizer.exe release\
+
+REM Copy setting files
 if exist "files\setting*.xlsx" (
     xcopy /Y files\setting*.xlsx release\files\
 ) else (
     for %%f in (setting*.xlsx) do copy /Y "%%f" release\files\
 )
 
+REM Copy license tools
+if exist "generate_license.bat" copy /Y generate_license.bat release\
+if exist "generate_license.py" copy /Y generate_license.py release\
+if exist "license_manager.py" copy /Y license_manager.py release\
+
 echo.
-echo release\ フォルダに配布用ファイルをまとめました。
+echo ========================================
+echo   配布用フォルダ作成完了
+echo ========================================
+echo.
+echo release\ フォルダの内容:
+echo   release\BantaneShiftOptimizer.exe
+echo   release\files\setting*.xlsx
+echo   release\generate_license.bat
+echo   release\generate_license.py
+echo   release\license_manager.py
+echo.
+echo 配布手順:
+echo   1. generate_license.bat でライセンスを発行
+echo   2. release\ フォルダごと配布先に渡す
+echo   3. .license ファイルを exe と同じフォルダに配置
 echo.
 
 :end
