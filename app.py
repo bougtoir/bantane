@@ -6506,7 +6506,7 @@ from license_manager import LicenseManager  # noqa: E402
 
 
 class LicenseDialog(QDialog):
-    """License authentication dialog with machine-ID display."""
+    """License authentication dialog (fallback when auto-login unavailable)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -6594,10 +6594,15 @@ def main():
     if default_font_name:
         app.setFont(QFont(default_font_name, 10))
     
-    # License authentication
-    license_dialog = LicenseDialog()
-    if license_dialog.exec() != QDialog.DialogCode.Accepted or not license_dialog.authenticated:
-        sys.exit(0)
+    # License authentication — auto-login if valid .license exists in files/
+    manager = LicenseManager()
+    auto_ok, auto_msg = manager.validate_license_auto()
+    if auto_ok:
+        logging.info(auto_msg)
+    else:
+        license_dialog = LicenseDialog()
+        if license_dialog.exec() != QDialog.DialogCode.Accepted or not license_dialog.authenticated:
+            sys.exit(0)
     
     w = MainWindow()
     
