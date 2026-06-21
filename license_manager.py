@@ -24,11 +24,14 @@ def _get_app_dir() -> Path:
     # PyInstaller
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    # Nuitka: sys.executable is the compiled exe, not a python interpreter
-    exe_name = Path(sys.executable).stem.lower()
-    if exe_name not in ("python", "python3", "pythonw", "python3w") and not exe_name.startswith("python3."):
-        if Path(__file__).resolve().parent != Path(sys.executable).resolve().parent:
+    # Nuitka / other bundlers: sys.executable is NOT a python interpreter
+    try:
+        exe_stem = Path(sys.executable).stem.lower()
+        if exe_stem not in ("python", "python3", "pythonw", "python3w") \
+                and not exe_stem.startswith("python3."):
             return Path(sys.executable).resolve().parent
+    except Exception:
+        pass
     return Path(__file__).resolve().parent
 
 

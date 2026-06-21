@@ -27,32 +27,26 @@ import jpholiday
 logging.basicConfig(filename="shift_app.log", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
-def _is_bundled_exe() -> bool:
-    """Detect if running as a bundled exe (PyInstaller or Nuitka)."""
+def get_app_dir() -> Path:
+    """Get the application directory.
+
+    PyInstaller sets sys.frozen; Nuitka does not, but sys.executable
+    points to the compiled .exe rather than a Python interpreter.
+    In both cases we want the directory that contains the .exe.
+    """
     # PyInstaller
     if getattr(sys, "frozen", False):
-        return True
-    # Nuitka: sys.executable points to the compiled exe, not a python interpreter
-    exe_name = Path(sys.executable).stem.lower()
-    if exe_name not in ("python", "python3", "pythonw", "python3w") and not exe_name.startswith("python3."):
-        # Additional check: if __file__ and sys.executable are in different dirs,
-        # it's likely a Nuitka --onefile extraction
-        if Path(__file__).resolve().parent != Path(sys.executable).resolve().parent:
-            return True
-    return False
-
-
-def get_app_dir() -> Path:
-    """Get the application directory, handling PyInstaller / Nuitka exe case.
-    
-    When running as a bundled exe, __file__ may point to a temporary extraction
-    directory. This function always returns the directory containing the actual
-    executable.
-    """
-    if _is_bundled_exe():
         return Path(sys.executable).resolve().parent
-    else:
-        return Path(__file__).resolve().parent
+    # Nuitka / other bundlers: sys.executable is NOT a python interpreter
+    try:
+        exe_stem = Path(sys.executable).stem.lower()
+        if exe_stem not in ("python", "python3", "pythonw", "python3w") \
+                and not exe_stem.startswith("python3."):
+            return Path(sys.executable).resolve().parent
+    except Exception:
+        pass
+    # Normal script execution
+    return Path(__file__).resolve().parent
 
 
 def get_system_japanese_font():
