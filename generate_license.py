@@ -74,7 +74,7 @@ def main():
         # Find all dist*/files/ and release/files/ directories
         targets = []
         for sub in sorted(script_dir.iterdir()):
-            if sub.is_dir():
+            if sub.is_dir() and (sub.name.startswith("dist") or sub.name == "release"):
                 files_sub = sub / "files"
                 if files_sub.is_dir():
                     targets.append(files_sub / ".license")

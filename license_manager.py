@@ -18,20 +18,38 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 
-def _get_app_dir() -> Path:
-    """Return the directory that contains the running executable / script."""
+def _is_bundled_exe() -> bool:
+    """Return True if running as a bundled executable (PyInstaller/Nuitka)."""
     import sys
-    # PyInstaller
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    # Nuitka / other bundlers: sys.executable is NOT a python interpreter
+        return True
     try:
         exe_stem = Path(sys.executable).stem.lower()
         if exe_stem not in ("python", "python3", "pythonw", "python3w") \
                 and not exe_stem.startswith("python3."):
-            return Path(sys.executable).resolve().parent
+            return True
     except Exception:
         pass
+    return False
+
+
+def _get_app_dir() -> Path:
+    """Return the directory that contains the running executable / script.
+
+    In Nuitka --onefile mode sys.executable may point to a temp extraction
+    directory.  sys.argv[0] preserves the original invocation path, so we
+    prefer it when the exe is a bundled binary.
+    """
+    import sys
+    if _is_bundled_exe():
+        # sys.argv[0] keeps the original path even in Nuitka --onefile
+        argv0_dir = Path(sys.argv[0]).resolve().parent
+        exe_dir = Path(sys.executable).resolve().parent
+        logging.debug(
+            'license_manager _get_app_dir: argv0=%s, executable=%s',
+            argv0_dir, exe_dir,
+        )
+        return argv0_dir
     return Path(__file__).resolve().parent
 
 
@@ -52,24 +70,49 @@ class LicenseManager:
 
     @staticmethod
     def _find_license_file() -> Path:
-        """Search for .license file in app dir/files/ first, then app dir."""
-        app_dir = _get_app_dir()
-        # 1) files/ subfolder (default location)
-        candidate = app_dir / 'files' / '.license'
-        if candidate.exists():
-            return candidate
-        # 2) app dir itself
-        candidate = app_dir / '.license'
-        if candidate.exists():
-            return candidate
-        # 3) any immediate subdirectory
-        for sub in app_dir.iterdir():
-            if sub.is_dir():
-                candidate = sub / '.license'
-                if candidate.exists():
-                    return candidate
-        # Default to files/ subfolder
-        return app_dir / 'files' / '.license'
+        """Search for .license file in multiple candidate directories."""
+        import sys
+        # Build a list of unique candidate base directories
+        dirs_seen: set = set()
+        search_dirs: List[Path] = []
+        for d in (
+            _get_app_dir(),
+            Path(sys.argv[0]).resolve().parent,
+            Path(sys.executable).resolve().parent,
+            Path(__file__).resolve().parent,
+        ):
+            key = str(d)
+            if key not in dirs_seen:
+                dirs_seen.add(key)
+                search_dirs.append(d)
+
+        # 1) files/ subfolder in each candidate dir
+        for d in search_dirs:
+            candidate = d / 'files' / '.license'
+            if candidate.exists():
+                logging.info('License found: %s', candidate)
+                return candidate
+        # 2) root of each candidate dir
+        for d in search_dirs:
+            candidate = d / '.license'
+            if candidate.exists():
+                logging.info('License found: %s', candidate)
+                return candidate
+        # 3) any immediate subdirectory of each candidate dir
+        for d in search_dirs:
+            try:
+                for sub in d.iterdir():
+                    if sub.is_dir():
+                        candidate = sub / '.license'
+                        if candidate.exists():
+                            logging.info('License found: %s', candidate)
+                            return candidate
+            except OSError:
+                pass
+        # Default to files/ subfolder of primary app dir
+        default = search_dirs[0] / 'files' / '.license'
+        logging.info('License not found; default path: %s', default)
+        return default
 
     # -- cryptography helpers ------------------------------------------------
 
