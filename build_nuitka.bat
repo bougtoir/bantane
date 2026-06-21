@@ -138,7 +138,13 @@ if exist "dist_nuitka\BantaneShiftOptimizer.exe" (
 )
 
 REM Copy CBC solver binary next to exe
-python -c "import pulp,os,shutil; src=os.path.join(os.path.dirname(pulp.__file__),'solverdir','cbc','win','i64','cbc.exe'); shutil.copy2(src,'dist_nuitka\\cbc.exe') if os.path.exists(src) else None; print('CBC: '+src+' -> dist_nuitka\\cbc.exe' if os.path.exists(src) else 'WARNING: cbc.exe not found at '+src)"
+echo Copying CBC solver...
+copy /Y venv\Lib\site-packages\pulp\solverdir\cbc\win\i64\cbc.exe dist_nuitka\
+if exist "dist_nuitka\cbc.exe" (
+    echo CBC solver: OK
+) else (
+    echo [WARNING] cbc.exe could not be copied
+)
 
 REM Create release folder structure
 echo Creating release folder...
