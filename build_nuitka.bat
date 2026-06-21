@@ -122,6 +122,18 @@ echo.
 echo Output: dist_nuitka\BantaneShiftOptimizer.exe
 echo.
 
+REM Create subfolders next to the exe in dist_nuitka
+if not exist "dist_nuitka\files" mkdir dist_nuitka\files
+if not exist "dist_nuitka\input" mkdir dist_nuitka\input
+if not exist "dist_nuitka\output" mkdir dist_nuitka\output
+
+REM Copy setting files to dist_nuitka\files
+if exist "files\setting*.xlsx" (
+    xcopy /Y files\setting*.xlsx dist_nuitka\files\
+) else (
+    for %%f in (setting*.xlsx) do copy /Y "%%f" dist_nuitka\files\
+)
+
 REM Create release folder structure
 echo Creating release folder...
 if not exist "release" mkdir release
