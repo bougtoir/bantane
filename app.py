@@ -47,6 +47,58 @@ def _is_bundled_exe() -> bool:
     return False
 
 
+def _is_temp_dir(path: Path) -> bool:
+    """Return True if path appears to be inside a temp/extraction directory."""
+    s = str(path).lower()
+    return 'temp' in s and ('onefile' in s or 'appdata' in s)
+
+
+def _get_persistent_dir() -> Path:
+    """Get the persistent directory (next to the exe, not Nuitka temp dir).
+
+    In Nuitka onefile mode, files are extracted to a temp directory.
+    This function returns the real exe directory by excluding temp paths.
+    """
+    candidates = [
+        Path(sys.argv[0]).parent,            # Without resolve - original exe path
+        Path(sys.argv[0]).resolve().parent,   # With resolve
+        Path(sys.executable).parent,          # Without resolve
+        Path(sys.executable).resolve().parent,
+        _STARTUP_CWD,
+    ]
+    # Deduplicate while preserving order
+    seen: set = set()
+    unique: list = []
+    for d in candidates:
+        key = str(d)
+        if key not in seen:
+            seen.add(key)
+            unique.append(d)
+
+    logging.info('_get_persistent_dir candidates: %s', [str(c) for c in unique])
+
+    # Prefer non-temp directory with 'files' subfolder
+    for d in unique:
+        if not _is_temp_dir(d) and (d / 'files').is_dir():
+            logging.info('_get_persistent_dir: selected %s (non-temp, has files/)', d)
+            return d
+
+    # Fallback: first non-temp directory
+    for d in unique:
+        if not _is_temp_dir(d):
+            logging.info('_get_persistent_dir: fallback non-temp %s', d)
+            return d
+
+    # Last resort: first candidate with 'files'
+    for d in unique:
+        if (d / 'files').is_dir():
+            logging.info('_get_persistent_dir: last resort %s (has files/)', d)
+            return d
+
+    logging.info('_get_persistent_dir: ultimate fallback %s', unique[0])
+    return unique[0]
+
+
 def get_app_dir() -> Path:
     """Get the application directory.
 
@@ -58,28 +110,7 @@ def get_app_dir() -> Path:
     the startup working directory (CWD at process start).
     """
     if _is_bundled_exe():
-        candidates = []
-        seen = set()
-        for d in (
-            Path(sys.argv[0]).resolve().parent,
-            Path(sys.executable).resolve().parent,
-            _STARTUP_CWD,
-        ):
-            key = str(d)
-            if key not in seen:
-                seen.add(key)
-                candidates.append(d)
-        logging.info(
-            'get_app_dir candidates: %s', [str(c) for c in candidates],
-        )
-        # Return the first candidate that has a 'files' subdirectory
-        for d in candidates:
-            if (d / 'files').is_dir():
-                logging.info('get_app_dir: selected %s (has files/)', d)
-                return d
-        # Fallback: startup CWD (most reliable for double-click on Windows)
-        logging.info('get_app_dir: fallback to startup CWD %s', _STARTUP_CWD)
-        return _STARTUP_CWD
+        return _get_persistent_dir()
     # Normal script execution
     return Path(__file__).resolve().parent
 
@@ -5236,12 +5267,7 @@ class MainWindow(QWidget):
         ts = now.strftime("%Y%m%d%H%M")
         filename = f"output_{mode}_{ts}.xlsx"
         
-        # In bundled exe mode, output must go to a persistent directory
-        # (not the Nuitka temp extraction dir which is deleted on exit)
-        if _is_bundled_exe():
-            output_dir = _STARTUP_CWD / "output"
-        else:
-            output_dir = get_app_dir() / "output"
+        output_dir = get_app_dir() / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
         
         return output_dir / filename
@@ -5621,12 +5647,7 @@ class MainWindow(QWidget):
             set_reserve_names(setting.get_reserve_names())
             work = WorkData.from_setting(setting, target_year, target_month)
             # generated_shift_A/Bはtemporaryフォルダに出力
-            # Bundled exe: use persistent directory (next to exe), not temp extraction dir
-            if _is_bundled_exe():
-                persistent_dir = _STARTUP_CWD
-            else:
-                persistent_dir = get_app_dir()
-            temporary_dir = persistent_dir / "temporary"
+            temporary_dir = get_app_dir() / "temporary"
             temporary_dir.mkdir(parents=True, exist_ok=True)
             _UNREGISTERED_STAFF.clear()
             jobA = JobData.from_setting(setting, "A", target_year, target_month,
@@ -5971,12 +5992,9 @@ class MainWindow(QWidget):
         """Run visualization only mode"""
         try:
             self._set_progress(0, "可視化のみを開始します...")
-            if _is_bundled_exe():
-                persistent_dir = _STARTUP_CWD
-            else:
-                persistent_dir = get_app_dir()
-            files_dir = persistent_dir / "files"
-            temporary_dir = persistent_dir / "temporary"
+            app_dir = get_app_dir()
+            files_dir = app_dir / "files"
+            temporary_dir = app_dir / "temporary"
             
             # Refresh file paths from files and temporary directories (in case files were added after startup)
             self._refresh_paths_from_files_dir(force=False)
