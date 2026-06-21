@@ -50,69 +50,62 @@ def _is_bundled_exe() -> bool:
 def _is_temp_dir(path: Path) -> bool:
     """Return True if path appears to be inside a temp/extraction directory."""
     s = str(path).lower()
-    return 'temp' in s and ('onefile' in s or 'appdata' in s)
+    # Windows temp patterns: AppData\Local\Temp, onefile extraction dirs
+    return ('\\temp\\' in s or '/temp/' in s or s.endswith('\\temp') or s.endswith('/temp'))
 
 
-def _get_persistent_dir() -> Path:
-    """Get the persistent directory (next to the exe, not Nuitka temp dir).
+def get_app_dir() -> Path:
+    """Get the application directory (persistent, next to the exe).
 
-    In Nuitka onefile mode, files are extracted to a temp directory.
-    This function returns the real exe directory by excluding temp paths.
+    Handles PyInstaller, Nuitka onefile, and normal script execution.
+    In Nuitka onefile mode, all standard paths (sys.argv[0], sys.executable,
+    CWD, __file__) may resolve to the temp extraction directory.
+    This function explicitly excludes temp directories to find the real
+    persistent directory where the exe and files/ folder reside.
     """
     candidates = [
-        Path(sys.argv[0]).parent,            # Without resolve - original exe path
-        Path(sys.argv[0]).resolve().parent,   # With resolve
-        Path(sys.executable).parent,          # Without resolve
+        Path(sys.argv[0]).parent,
+        Path(sys.argv[0]).resolve().parent,
+        Path(sys.executable).parent,
         Path(sys.executable).resolve().parent,
         _STARTUP_CWD,
+        Path(__file__).resolve().parent,
     ]
     # Deduplicate while preserving order
     seen: set = set()
     unique: list = []
     for d in candidates:
-        key = str(d)
+        try:
+            key = str(d)
+        except Exception:
+            continue
         if key not in seen:
             seen.add(key)
             unique.append(d)
 
-    logging.info('_get_persistent_dir candidates: %s', [str(c) for c in unique])
+    logging.info('get_app_dir candidates: %s', [str(c) for c in unique])
 
-    # Prefer non-temp directory with 'files' subfolder
+    # Priority 1: non-temp directory with 'files' subfolder
     for d in unique:
         if not _is_temp_dir(d) and (d / 'files').is_dir():
-            logging.info('_get_persistent_dir: selected %s (non-temp, has files/)', d)
+            logging.info('get_app_dir: selected %s (non-temp, has files/)', d)
             return d
 
-    # Fallback: first non-temp directory
+    # Priority 2: first non-temp directory
     for d in unique:
         if not _is_temp_dir(d):
-            logging.info('_get_persistent_dir: fallback non-temp %s', d)
+            logging.info('get_app_dir: fallback non-temp %s', d)
             return d
 
-    # Last resort: first candidate with 'files'
+    # Priority 3: any directory with 'files' (even if temp)
     for d in unique:
         if (d / 'files').is_dir():
-            logging.info('_get_persistent_dir: last resort %s (has files/)', d)
+            logging.info('get_app_dir: last resort %s (has files/)', d)
             return d
 
-    logging.info('_get_persistent_dir: ultimate fallback %s', unique[0])
+    # Ultimate fallback
+    logging.info('get_app_dir: ultimate fallback %s', unique[0])
     return unique[0]
-
-
-def get_app_dir() -> Path:
-    """Get the application directory.
-
-    PyInstaller sets sys.frozen; Nuitka does not, but sys.executable
-    points to the compiled .exe rather than a Python interpreter.
-    In Nuitka --onefile mode sys.executable may point to a temp
-    extraction directory; sys.argv[0] preserves the original path.
-    When neither resolves to the correct directory, fall back to
-    the startup working directory (CWD at process start).
-    """
-    if _is_bundled_exe():
-        return _get_persistent_dir()
-    # Normal script execution
-    return Path(__file__).resolve().parent
 
 
 def _solve_with_highs(model, time_limit: float = 15.0) -> int:
