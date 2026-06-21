@@ -5050,7 +5050,7 @@ class MainWindow(QWidget):
             for xlsx_file in files_dir.glob("*.xlsx"):
                 file_name = xlsx_file.name.lower()
                 for prefix, attr_name in files_mappings.items():
-                    if file_name.startswith(prefix.lower()):
+                    if prefix.lower() in file_name:
                         current_value = getattr(self, attr_name, None)
                         if force or current_value is None:
                             setattr(self, attr_name, xlsx_file)
@@ -5070,7 +5070,7 @@ class MainWindow(QWidget):
             for xlsx_file in temporary_dir.glob("*.xlsx"):
                 file_name = xlsx_file.name.lower()
                 for prefix, attr_name in temporary_mappings.items():
-                    if file_name.startswith(prefix.lower()):
+                    if prefix.lower() in file_name:
                         current_value = getattr(self, attr_name, None)
                         if force or current_value is None:
                             setattr(self, attr_name, xlsx_file)
