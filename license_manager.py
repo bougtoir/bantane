@@ -11,11 +11,15 @@ import calendar
 import datetime as dt
 import hashlib
 import logging
+import os as _os
 import platform
 import secrets as _secrets
 import string
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+# Capture startup CWD before anything can change it.
+_STARTUP_CWD = Path(_os.getcwd())
 
 
 def _is_bundled_exe() -> bool:
@@ -37,19 +41,30 @@ def _get_app_dir() -> Path:
     """Return the directory that contains the running executable / script.
 
     In Nuitka --onefile mode sys.executable may point to a temp extraction
-    directory.  sys.argv[0] preserves the original invocation path, so we
-    prefer it when the exe is a bundled binary.
+    directory.  Checks multiple candidates and returns the first that
+    contains a 'files' subdirectory, falling back to startup CWD.
     """
     import sys
     if _is_bundled_exe():
-        # sys.argv[0] keeps the original path even in Nuitka --onefile
-        argv0_dir = Path(sys.argv[0]).resolve().parent
-        exe_dir = Path(sys.executable).resolve().parent
+        candidates = []
+        seen: set = set()
+        for d in (
+            Path(sys.argv[0]).resolve().parent,
+            Path(sys.executable).resolve().parent,
+            _STARTUP_CWD,
+        ):
+            key = str(d)
+            if key not in seen:
+                seen.add(key)
+                candidates.append(d)
         logging.debug(
-            'license_manager _get_app_dir: argv0=%s, executable=%s',
-            argv0_dir, exe_dir,
+            'license_manager _get_app_dir candidates: %s',
+            [str(c) for c in candidates],
         )
-        return argv0_dir
+        for d in candidates:
+            if (d / 'files').is_dir():
+                return d
+        return _STARTUP_CWD
     return Path(__file__).resolve().parent
 
 
