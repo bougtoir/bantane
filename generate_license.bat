@@ -82,7 +82,9 @@ for /d %%D in (dist* release) do (
     )
 )
 if "%LICENSE_FOUND%"=="0" (
-    if exist ".license" (
+    if exist "files\.license" (
+        echo [成功] .license: %CD%\files\.license
+    ) else if exist ".license" (
         echo [成功] .license: %CD%\.license
     ) else (
         echo [確認] .license ファイルが見つかりません
