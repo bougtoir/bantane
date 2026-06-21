@@ -5050,10 +5050,20 @@ class MainWindow(QWidget):
         Args:
             force: If True, overwrite existing paths. If False, only fill in None paths.
         """
-        app_dir = get_app_dir()
-        files_dir = app_dir / "files"
-        temporary_dir = app_dir / "temporary"
-        
+        # Build candidate base directories (same strategy as license search)
+        base_dirs: List[Path] = []
+        seen: Set[str] = set()
+        for d in (
+            get_app_dir(),
+            Path(sys.argv[0]).resolve().parent,
+            Path(sys.executable).resolve().parent,
+            _STARTUP_CWD,
+        ):
+            key = str(d)
+            if key not in seen:
+                seen.add(key)
+                base_dirs.append(d)
+
         # Files to search in 'files' folder
         files_mappings = {
             'setting': 'setting_path',
@@ -5069,36 +5079,46 @@ class MainWindow(QWidget):
             'generated_shift_B': 'generated_shift_B_path',
         }
         
-        # Search in files folder
-        if files_dir.exists():
-            for xlsx_file in files_dir.glob("*.xlsx"):
-                file_name = xlsx_file.name.lower()
-                for prefix, attr_name in files_mappings.items():
-                    if prefix.lower() in file_name:
-                        current_value = getattr(self, attr_name, None)
-                        if force or current_value is None:
-                            setattr(self, attr_name, xlsx_file)
-                        break
-        
-        # Search in output folder for output*.xlsx (for visualization)
-        output_dir = app_dir / "output"
-        if output_dir.exists():
-            for xlsx_file in output_dir.glob("output*.xlsx"):
-                current_value = getattr(self, 'visualization_input_path', None)
-                if force or current_value is None:
-                    self.visualization_input_path = xlsx_file
+        # Search in files folder across all candidate base directories
+        for base in base_dirs:
+            files_dir = base / "files"
+            if files_dir.exists():
+                for xlsx_file in files_dir.glob("*.xlsx"):
+                    file_name = xlsx_file.name.lower()
+                    for prefix, attr_name in files_mappings.items():
+                        if file_name.startswith(prefix.lower()):
+                            current_value = getattr(self, attr_name, None)
+                            if force or current_value is None:
+                                setattr(self, attr_name, xlsx_file)
+                                logging.info('Found %s: %s', prefix, xlsx_file)
+                            break
+                if getattr(self, 'setting_path', None) is not None:
                     break
         
-        # Search in temporary folder
-        if temporary_dir.exists():
-            for xlsx_file in temporary_dir.glob("*.xlsx"):
-                file_name = xlsx_file.name.lower()
-                for prefix, attr_name in temporary_mappings.items():
-                    if prefix.lower() in file_name:
-                        current_value = getattr(self, attr_name, None)
-                        if force or current_value is None:
-                            setattr(self, attr_name, xlsx_file)
-                        break
+        # Search in output folder for output*.xlsx (for visualization)
+        for base in base_dirs:
+            output_dir = base / "output"
+            if output_dir.exists():
+                for xlsx_file in output_dir.glob("output*.xlsx"):
+                    current_value = getattr(self, 'visualization_input_path', None)
+                    if force or current_value is None:
+                        self.visualization_input_path = xlsx_file
+                    break
+                if getattr(self, 'visualization_input_path', None) is not None:
+                    break
+        
+        # Search in temporary folder across all candidate base directories
+        for base in base_dirs:
+            temporary_dir = base / "temporary"
+            if temporary_dir.exists():
+                for xlsx_file in temporary_dir.glob("*.xlsx"):
+                    file_name = xlsx_file.name.lower()
+                    for prefix, attr_name in temporary_mappings.items():
+                        if prefix.lower() in file_name:
+                            current_value = getattr(self, attr_name, None)
+                            if force or current_value is None:
+                                setattr(self, attr_name, xlsx_file)
+                            break
 
     def _compute_target_period(self) -> Tuple[int, int]:
         """Compute the target year and month based on button state
