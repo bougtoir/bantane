@@ -73,12 +73,21 @@ python generate_license.py %*
 echo.
 echo 終了コード: %errorlevel%
 
-REM Check if .license was created
-if exist ".license" (
-    echo [成功] .license ファイルが生成されました: %CD%\.license
-) else (
-    echo [確認] .license ファイルが見つかりません。
-    echo         出力先を確認してください。
+REM Check if .license was created in any dist*/files/ or release/files/
+set LICENSE_FOUND=0
+for /d %%D in (dist* release) do (
+    if exist "%%D\files\.license" (
+        echo [成功] .license: %CD%\%%D\files\.license
+        set LICENSE_FOUND=1
+    )
+)
+if "%LICENSE_FOUND%"=="0" (
+    if exist ".license" (
+        echo [成功] .license: %CD%\.license
+    ) else (
+        echo [確認] .license ファイルが見つかりません
+        echo         generate_license.py の出力先を確認してください
+    )
 )
 
 :end
