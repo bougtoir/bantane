@@ -79,9 +79,10 @@ set NUITKA_OPTS=%NUITKA_OPTS% --include-module=jpholiday
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=xlrd
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=openpyxl
 set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pulp.tests
+set NUITKA_OPTS=%NUITKA_OPTS% --include-module=highspy
 
-REM Include PuLP solver data files (cbc.exe etc.)
-set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=pulp
+REM Include highspy package data (solver library)
+set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=highspy
 
 set NUITKA_OPTS=%NUITKA_OPTS% --output-filename=BantaneShiftOptimizer.exe
 set NUITKA_OPTS=%NUITKA_OPTS% --output-dir=dist_nuitka
@@ -137,14 +138,7 @@ if exist "dist_nuitka\BantaneShiftOptimizer.exe" (
     goto :end
 )
 
-REM Copy CBC solver binary next to exe
-echo Copying CBC solver...
-copy /Y venv\Lib\site-packages\pulp\solverdir\cbc\win\i64\cbc.exe dist_nuitka\
-if exist "dist_nuitka\cbc.exe" (
-    echo CBC solver: OK
-) else (
-    echo [WARNING] cbc.exe could not be copied
-)
+
 
 REM Create release folder structure
 echo Creating release folder...
@@ -153,9 +147,8 @@ if not exist "release\files" mkdir release\files
 if not exist "release\input" mkdir release\input
 if not exist "release\output" mkdir release\output
 
-REM Copy exe and solver
+REM Copy exe
 copy /Y dist_nuitka\BantaneShiftOptimizer.exe release\
-if exist "dist_nuitka\cbc.exe" copy /Y dist_nuitka\cbc.exe release\
 
 REM Copy setting files
 if exist "files\*setting*.xlsx" (

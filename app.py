@@ -84,59 +84,53 @@ def get_app_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def _find_cbc_solver() -> Optional[str]:
-    """Find the CBC solver executable path for bundled exe mode.
+def _solve_with_highs(model, time_limit: float = 15.0) -> int:
+    """Solve a PuLP model using highspy Python API (in-process, no subprocess).
 
-    In Nuitka onefile mode, cbc.exe inside the temp extraction directory
-    may not be executable due to Windows security restrictions.
-    Strategy:
-      1. Look for cbc.exe next to the app exe (placed by build script)
-      2. If not found, locate it via PuLP's internal path and copy it
-         to the app directory where it can be executed.
-      3. Fall back to None (PuLP auto-detect) for normal script mode.
+    This avoids the Nuitka onefile issue where external executables
+    cannot be run from the temp extraction directory.
+    Returns PuLP status code.
     """
-    if not _is_bundled_exe():
-        return None
-    import shutil
-    app_dirs = []
-    seen: set = set()
-    for d in (
-        Path(sys.argv[0]).resolve().parent,
-        Path(sys.executable).resolve().parent,
-        _STARTUP_CWD,
-    ):
-        key = str(d)
-        if key not in seen:
-            seen.add(key)
-            app_dirs.append(d)
-    # Check if cbc.exe already exists next to exe
-    for d in app_dirs:
-        cbc_path = d / "cbc.exe"
-        if cbc_path.exists():
-            logging.info('CBC solver found: %s', cbc_path)
-            return str(cbc_path)
-    # Try to find cbc.exe via PuLP and copy to app directory
+    import highspy
+    import os
+
+    # Write model to MPS in the app directory (writable)
+    app_dir = get_app_dir()
+    mps_path = str(app_dir / "_temp_model.mps")
+    model.writeMPS(mps_path)
+
+    # Solve with highspy (in-process C library, no subprocess)
+    h = highspy.Highs()
+    h.setOptionValue("output_flag", False)
+    h.setOptionValue("time_limit", time_limit)
+    h.readModel(mps_path)
+    h.run()
+
+    # Clean up temp file
     try:
-        import pulp
-        pulp_dir = Path(pulp.__file__).resolve().parent
-        src = pulp_dir / "solverdir" / "cbc" / "win" / "i64" / "cbc.exe"
-        if not src.exists():
-            # Try alternative path structure
-            src = pulp_dir / "apis" / ".." / "solverdir" / "cbc" / "win" / "i64" / "cbc.exe"
-            src = src.resolve()
-        if src.exists():
-            # Copy to the first writable app directory
-            for d in app_dirs:
-                dest = d / "cbc.exe"
-                try:
-                    shutil.copy2(str(src), str(dest))
-                    logging.info('CBC solver copied: %s -> %s', src, dest)
-                    return str(dest)
-                except (OSError, PermissionError):
-                    continue
-    except Exception as e:
-        logging.warning('CBC solver search failed: %s', e)
-    return None
+        os.remove(mps_path)
+    except OSError:
+        pass
+
+    # Map solution back to PuLP model
+    model_status = h.getModelStatus()
+    if model_status == highspy.kHighsModelStatusOptimal:
+        model.status = pulp.constants.LpStatusOptimal
+        sol = h.getSolution()
+        # PuLP writeMPS outputs variables in sorted order by name
+        var_names_sorted = sorted(model._variables, key=lambda v: v.name)
+        for i, var in enumerate(var_names_sorted):
+            var.varValue = sol.col_value[i]
+        # Set objective value
+        info = h.getInfoValue("objective_function_value")
+        model.objective_value = info[1] if isinstance(info, tuple) else info
+    elif model_status == highspy.kHighsModelStatusInfeasible:
+        model.status = pulp.constants.LpStatusInfeasible
+    else:
+        model.status = pulp.constants.LpStatusNotSolved
+
+    logging.info('HiGHS solver status: %s', model_status)
+    return model.status
 
 
 def get_system_japanese_font():
@@ -2478,8 +2472,7 @@ class Optimizer:
             if objective_terms:
                 self.model += pulp.lpSum(objective_terms), "Objective"
 
-            _cbc_path = _find_cbc_solver()
-            self.model.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=15, path=_cbc_path))
+            _solve_with_highs(self.model, time_limit=15.0)
             res = self.model.status
 
             if res == pulp.LpStatusOptimal:
