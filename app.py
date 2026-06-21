@@ -87,22 +87,55 @@ def get_app_dir() -> Path:
 def _find_cbc_solver() -> Optional[str]:
     """Find the CBC solver executable path for bundled exe mode.
 
-    In Nuitka onefile mode, the solver bundled inside the temp extraction
-    directory may not be executable.  Look for cbc.exe next to the app exe
-    first, then fall back to PuLP's default (None = auto-detect).
+    In Nuitka onefile mode, cbc.exe inside the temp extraction directory
+    may not be executable due to Windows security restrictions.
+    Strategy:
+      1. Look for cbc.exe next to the app exe (placed by build script)
+      2. If not found, locate it via PuLP's internal path and copy it
+         to the app directory where it can be executed.
+      3. Fall back to None (PuLP auto-detect) for normal script mode.
     """
     if not _is_bundled_exe():
         return None
-    # Search candidate directories for cbc.exe
+    import shutil
+    app_dirs = []
+    seen: set = set()
     for d in (
         Path(sys.argv[0]).resolve().parent,
         Path(sys.executable).resolve().parent,
         _STARTUP_CWD,
     ):
+        key = str(d)
+        if key not in seen:
+            seen.add(key)
+            app_dirs.append(d)
+    # Check if cbc.exe already exists next to exe
+    for d in app_dirs:
         cbc_path = d / "cbc.exe"
         if cbc_path.exists():
             logging.info('CBC solver found: %s', cbc_path)
             return str(cbc_path)
+    # Try to find cbc.exe via PuLP and copy to app directory
+    try:
+        import pulp
+        pulp_dir = Path(pulp.__file__).resolve().parent
+        src = pulp_dir / "solverdir" / "cbc" / "win" / "i64" / "cbc.exe"
+        if not src.exists():
+            # Try alternative path structure
+            src = pulp_dir / "apis" / ".." / "solverdir" / "cbc" / "win" / "i64" / "cbc.exe"
+            src = src.resolve()
+        if src.exists():
+            # Copy to the first writable app directory
+            for d in app_dirs:
+                dest = d / "cbc.exe"
+                try:
+                    shutil.copy2(str(src), str(dest))
+                    logging.info('CBC solver copied: %s -> %s', src, dest)
+                    return str(dest)
+                except (OSError, PermissionError):
+                    continue
+    except Exception as e:
+        logging.warning('CBC solver search failed: %s', e)
     return None
 
 
