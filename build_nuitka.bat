@@ -126,6 +126,7 @@ REM Create release folder structure
 echo Creating release folder...
 if not exist "release" mkdir release
 if not exist "release\files" mkdir release\files
+if not exist "release\output" mkdir release\output
 
 REM Copy exe
 copy /Y dist_nuitka\BantaneShiftOptimizer.exe release\

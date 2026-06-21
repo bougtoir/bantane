@@ -5002,7 +5002,6 @@ class MainWindow(QWidget):
         files_mappings = {
             'setting': 'setting_path',
             'manual': 'visualization_input_path',
-            'output': 'visualization_input_path',  # Also accept output*.xlsx for visualization
         }
         
         # Files to search in 'temporary' folder (generated intermediate files)
@@ -5024,6 +5023,15 @@ class MainWindow(QWidget):
                         if force or current_value is None:
                             setattr(self, attr_name, xlsx_file)
                         break
+        
+        # Search in output folder for output*.xlsx (for visualization)
+        output_dir = app_dir / "output"
+        if output_dir.exists():
+            for xlsx_file in output_dir.glob("output*.xlsx"):
+                current_value = getattr(self, 'visualization_input_path', None)
+                if force or current_value is None:
+                    self.visualization_input_path = xlsx_file
+                    break
         
         # Search in temporary folder
         if temporary_dir.exists():
@@ -5090,7 +5098,7 @@ class MainWindow(QWidget):
                     return today.year, today.month + 1
 
     def _get_default_output_path(self, mode: str = "opt") -> Path:
-        """Get the default output path in files subdirectory with timestamp filename
+        """Get the default output path in output subdirectory with timestamp filename
         
         Args:
             mode: "opt" for optimization output, "vis" for visualization output
@@ -5100,11 +5108,10 @@ class MainWindow(QWidget):
         filename = f"output_{mode}_{ts}.xlsx"
         
         app_dir = get_app_dir()
-        files_dir = app_dir / "files"
+        output_dir = app_dir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
         
-        if files_dir.exists():
-            return files_dir / filename
-        return Path.cwd() / filename
+        return output_dir / filename
 
     def _set_progress(self, value: int, message: str):
         """Update progress bar and log"""
@@ -5481,7 +5488,8 @@ class MainWindow(QWidget):
             set_reserve_names(setting.get_reserve_names())
             work = WorkData.from_setting(setting, target_year, target_month)
             # generated_shift_A/Bはtemporaryフォルダに出力
-            temporary_dir = self.output_path.parent.parent / "temporary" if self.output_path else Path.cwd() / "temporary"
+            app_dir = get_app_dir()
+            temporary_dir = app_dir / "temporary"
             temporary_dir.mkdir(parents=True, exist_ok=True)
             _UNREGISTERED_STAFF.clear()
             jobA = JobData.from_setting(setting, "A", target_year, target_month,
@@ -5838,7 +5846,7 @@ class MainWindow(QWidget):
             if not self.setting_path or not self.setting_path.exists():
                 missing_files.append("setting*.xlsx (基本設定) → filesフォルダ")
             if not self.visualization_input_path or not self.visualization_input_path.exists():
-                missing_files.append("manual*.xlsx または output*.xlsx → filesフォルダ")
+                missing_files.append("manual*.xlsx → filesフォルダ、または output*.xlsx → outputフォルダ")
             
             if missing_files:
                 msg = "可視化モードに必要なファイルが見つかりません。\n\n"
