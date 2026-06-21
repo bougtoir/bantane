@@ -126,6 +126,13 @@ if exist "dist_nuitka\BantaneShiftOptimizer.exe" (
     ) else (
         for %%f in (*setting*.xlsx) do copy /Y "%%f" dist_nuitka\files\
     )
+    REM Copy CBC solver binary next to exe
+    for /f "delims=" %%P in ('python -c "import pulp; import os; print(os.path.join(os.path.dirname(pulp.__file__), 'solverdir', 'cbc', 'win', 'i64', 'cbc.exe'))"') do (
+        if exist "%%P" (
+            copy /Y "%%P" dist_nuitka\
+            echo CBC solver copied to dist_nuitka\cbc.exe
+        )
+    )
 ) else (
     echo.
     echo [ERROR] Nuitka build failed - exe not found.
@@ -144,8 +151,9 @@ if not exist "release\files" mkdir release\files
 if not exist "release\input" mkdir release\input
 if not exist "release\output" mkdir release\output
 
-REM Copy exe
+REM Copy exe and solver
 copy /Y dist_nuitka\BantaneShiftOptimizer.exe release\
+if exist "dist_nuitka\cbc.exe" copy /Y dist_nuitka\cbc.exe release\
 
 REM Copy setting files
 if exist "files\*setting*.xlsx" (

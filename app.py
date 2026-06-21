@@ -84,6 +84,28 @@ def get_app_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _find_cbc_solver() -> Optional[str]:
+    """Find the CBC solver executable path for bundled exe mode.
+
+    In Nuitka onefile mode, the solver bundled inside the temp extraction
+    directory may not be executable.  Look for cbc.exe next to the app exe
+    first, then fall back to PuLP's default (None = auto-detect).
+    """
+    if not _is_bundled_exe():
+        return None
+    # Search candidate directories for cbc.exe
+    for d in (
+        Path(sys.argv[0]).resolve().parent,
+        Path(sys.executable).resolve().parent,
+        _STARTUP_CWD,
+    ):
+        cbc_path = d / "cbc.exe"
+        if cbc_path.exists():
+            logging.info('CBC solver found: %s', cbc_path)
+            return str(cbc_path)
+    return None
+
+
 def get_system_japanese_font():
     """Get appropriate Japanese font name for the current OS"""
     if platform.system() == "Windows":
@@ -2423,7 +2445,8 @@ class Optimizer:
             if objective_terms:
                 self.model += pulp.lpSum(objective_terms), "Objective"
 
-            self.model.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=15))
+            _cbc_path = _find_cbc_solver()
+            self.model.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=15, path=_cbc_path))
             res = self.model.status
 
             if res == pulp.LpStatusOptimal:
