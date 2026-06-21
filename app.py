@@ -5119,6 +5119,7 @@ class MainWindow(QWidget):
                             if force or current_value is None:
                                 setattr(self, attr_name, xlsx_file)
                             break
+                break
 
     def _compute_target_period(self) -> Tuple[int, int]:
         """Compute the target year and month based on button state
