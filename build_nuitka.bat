@@ -71,7 +71,7 @@ REM
 REM Nuitka compiles Python to C then to native code,
 REM making reverse-engineering extremely difficult.
 
-set NUITKA_OPTS=--onefile --windows-console-mode=disable
+set NUITKA_OPTS=--onefile --mingw64 --windows-console-mode=disable
 set NUITKA_OPTS=%NUITKA_OPTS% --enable-plugin=pyside6
 set NUITKA_OPTS=%NUITKA_OPTS% --include-package=pulp
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=cryptography
