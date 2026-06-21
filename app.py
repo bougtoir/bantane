@@ -26,6 +26,12 @@ import jpholiday
 
 logging.basicConfig(filename="shift_app.log", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+# Capture the startup working directory at module load time.
+# On Windows, double-clicking an exe sets CWD to the exe's directory.
+# This must be captured before any code changes CWD.
+import os as _os
+_STARTUP_CWD = Path(_os.getcwd())
+
 
 def _is_bundled_exe() -> bool:
     """Return True if running as a bundled executable (PyInstaller/Nuitka)."""
@@ -48,14 +54,32 @@ def get_app_dir() -> Path:
     points to the compiled .exe rather than a Python interpreter.
     In Nuitka --onefile mode sys.executable may point to a temp
     extraction directory; sys.argv[0] preserves the original path.
+    When neither resolves to the correct directory, fall back to
+    the startup working directory (CWD at process start).
     """
     if _is_bundled_exe():
-        argv0_dir = Path(sys.argv[0]).resolve().parent
-        exe_dir = Path(sys.executable).resolve().parent
+        candidates = []
+        seen = set()
+        for d in (
+            Path(sys.argv[0]).resolve().parent,
+            Path(sys.executable).resolve().parent,
+            _STARTUP_CWD,
+        ):
+            key = str(d)
+            if key not in seen:
+                seen.add(key)
+                candidates.append(d)
         logging.info(
-            'get_app_dir: argv0=%s, executable=%s', argv0_dir, exe_dir,
+            'get_app_dir candidates: %s', [str(c) for c in candidates],
         )
-        return argv0_dir
+        # Return the first candidate that has a 'files' subdirectory
+        for d in candidates:
+            if (d / 'files').is_dir():
+                logging.info('get_app_dir: selected %s (has files/)', d)
+                return d
+        # Fallback: startup CWD (most reliable for double-click on Windows)
+        logging.info('get_app_dir: fallback to startup CWD %s', _STARTUP_CWD)
+        return _STARTUP_CWD
     # Normal script execution
     return Path(__file__).resolve().parent
 
