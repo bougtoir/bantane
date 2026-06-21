@@ -2060,7 +2060,7 @@ class Optimizer:
                     if need > len(self.jobB.avail_by_date.get(d, set())):
                         self.infeasible_reasons.append(f"{d}: Bの総必要数{need} > 当日出勤可能{len(self.jobB.avail_by_date.get(d, set()))}")
 
-            prefer_val = float(self.setting.penalty_map.get("prefer", {"value": 10}).get("value", 10.0))
+            prefer_val = float(self.setting.penalty_map.get("prefer", {"value": 1}).get("value", 1.0))
             for w in W:
                 wr = w_rows[w]
                 room = str(wr.get("room"))
@@ -2405,64 +2405,98 @@ class Optimizer:
             return Optimizer.INFEASIBLE
 
     def _add_workload_leveling_constraints(self, W, w_rows, A_list, B_list):
-        """Add constraints to level workload within same job type and load groups, including duty template assignments.
-        
-        Note: Reserve staff are excluded from workload leveling as they are only used as emergency backup.
+        """Add constraints to level workload within same job type and load groups.
+
+        Uses penalties from setting:
+          - diff: intra-group leveling (thres=allowed % difference, value=penalty weight)
+          - more: cross-group constraint for load='more' staff (+thres% vs normal avg)
+          - less: cross-group constraint for load='less' staff (-thres% vs normal avg)
+
+        Reserve staff are excluded from workload leveling.
         """
-        diff_penalty = float(self.setting.penalty_map.get("diff", {"value": 1}).get("value", 1.0))
+        diff_cfg = self.setting.penalty_map.get("diff", {"value": 1, "thres": 0})
+        diff_penalty = float(diff_cfg.get("value", 1.0))
+        diff_thres_pct = int(diff_cfg.get("thres", 0))
+
+        more_cfg = self.setting.penalty_map.get("more", {"value": 1, "thres": 20})
+        more_penalty = float(more_cfg.get("value", 1.0))
+        more_thres_pct = int(more_cfg.get("thres", 20))
+
+        less_cfg = self.setting.penalty_map.get("less", {"value": 1, "thres": 20})
+        less_penalty = float(less_cfg.get("value", 1.0))
+        less_thres_pct = int(less_cfg.get("thres", 20))
+
         penalty_terms = []
 
-        if self.jobA is not None:
-            load_groups_A = {}
-            for a in A_list:
-                load_type = self.jobA.load.get(a, "normal")
-                if load_type == "reserve":
+        def _build_load_groups(members_list, job):
+            groups = {}
+            for m in members_list:
+                lt = job.load.get(m, "normal")
+                if lt == "reserve":
                     continue
-                if load_type not in load_groups_A:
-                    load_groups_A[load_type] = []
-                load_groups_A[load_type].append(a)
+                groups.setdefault(lt, []).append(m)
+            return groups
 
-            for load_type, members in load_groups_A.items():
-                if len(members) > 1:
-                    for i, a1 in enumerate(members):
-                        for a2 in members[i+1:]:
-                            work1_opt = pulp.lpSum([
-                                self.x_vars[(w, a1)] for w in W if (w, a1) in self.x_vars
-                            ])
-                            work2_opt = pulp.lpSum([
-                                self.x_vars[(w, a2)] for w in W if (w, a2) in self.x_vars
-                            ])
+        def _work_expr(var_dict, member, work_ids):
+            return pulp.lpSum([var_dict[(w, member)] for w in work_ids if (w, member) in var_dict])
 
-                            diff_var = pulp.LpVariable(f"diff_A_{a1}_{a2}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
-                            self.model += work1_opt - work2_opt <= diff_var, f"diff_A_{a1}_{a2}_upper"
-                            self.model += work2_opt - work1_opt <= diff_var, f"diff_A_{a1}_{a2}_lower"
-                            penalty_terms.append(diff_var * diff_penalty)
+        def _add_intra_group(load_groups, var_dict, role_prefix, total_demand):
+            """A: intra-group leveling with diff thres."""
+            for load_type, members in load_groups.items():
+                if len(members) <= 1:
+                    continue
+                avg_per_member = total_demand / len(members) if len(members) > 0 else 1
+                threshold_count = max(1, int(avg_per_member * diff_thres_pct / 100)) if diff_thres_pct > 0 else 0
+                for i, m1 in enumerate(members):
+                    for m2 in members[i+1:]:
+                        w1 = _work_expr(var_dict, m1, W)
+                        w2 = _work_expr(var_dict, m2, W)
+                        dv = pulp.LpVariable(f"diff_{role_prefix}_{m1}_{m2}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
+                        self.model += w1 - w2 - threshold_count <= dv, f"diff_{role_prefix}_{m1}_{m2}_upper"
+                        self.model += w2 - w1 - threshold_count <= dv, f"diff_{role_prefix}_{m1}_{m2}_lower"
+                        penalty_terms.append(dv * diff_penalty)
+
+        def _add_cross_group(load_groups, var_dict, role_prefix):
+            """B: cross-group more/less constraints vs normal average."""
+            normal_members = load_groups.get("normal", [])
+            if not normal_members:
+                return
+            count_normal = len(normal_members)
+            sum_normal = pulp.lpSum([_work_expr(var_dict, n, W) for n in normal_members])
+
+            more_members = load_groups.get("more", [])
+            if more_members and more_penalty > 0:
+                ratio = 1.0 + more_thres_pct / 100.0
+                for m in more_members:
+                    work_m = _work_expr(var_dict, m, W)
+                    # target = sum_normal / count_normal * ratio
+                    # penalize shortfall: target - work_m > 0
+                    sv = pulp.LpVariable(f"more_{role_prefix}_{m}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
+                    self.model += sum_normal * ratio / count_normal - work_m <= sv, f"more_{role_prefix}_{m}_short"
+                    penalty_terms.append(sv * more_penalty)
+
+            less_members = load_groups.get("less", [])
+            if less_members and less_penalty > 0:
+                ratio = 1.0 - less_thres_pct / 100.0
+                for m in less_members:
+                    work_m = _work_expr(var_dict, m, W)
+                    # target = sum_normal / count_normal * ratio
+                    # penalize excess: work_m - target > 0
+                    sv = pulp.LpVariable(f"less_{role_prefix}_{m}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
+                    self.model += work_m - sum_normal * ratio / count_normal <= sv, f"less_{role_prefix}_{m}_over"
+                    penalty_terms.append(sv * less_penalty)
+
+        if self.jobA is not None:
+            load_groups_A = _build_load_groups(A_list, self.jobA)
+            total_demand_A = sum(int(w_rows[w].get("need_A", 0)) for w in W)
+            _add_intra_group(load_groups_A, self.x_vars, "A", total_demand_A)
+            _add_cross_group(load_groups_A, self.x_vars, "A")
 
         if self.jobB is not None:
-            load_groups_B = {}
-            for b in B_list:
-                load_type = self.jobB.load.get(b, "normal")
-                if load_type == "reserve":
-                    continue
-                if load_type not in load_groups_B:
-                    load_groups_B[load_type] = []
-                load_groups_B[load_type].append(b)
-
-            for load_type, members in load_groups_B.items():
-                if len(members) > 1:
-                    for i, b1 in enumerate(members):
-                        for b2 in members[i+1:]:
-                            work1_opt = pulp.lpSum([
-                                self.y_vars[(w, b1)] for w in W if (w, b1) in self.y_vars
-                            ])
-                            work2_opt = pulp.lpSum([
-                                self.y_vars[(w, b2)] for w in W if (w, b2) in self.y_vars
-                            ])
-
-                            diff_var = pulp.LpVariable(f"diff_B_{b1}_{b2}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
-                            self.model += work1_opt - work2_opt <= diff_var, f"diff_B_{b1}_{b2}_upper"
-                            self.model += work2_opt - work1_opt <= diff_var, f"diff_B_{b1}_{b2}_lower"
-                            penalty_terms.append(diff_var * diff_penalty)
+            load_groups_B = _build_load_groups(B_list, self.jobB)
+            total_demand_B = sum(int(w_rows[w].get("need_B", 0)) for w in W)
+            _add_intra_group(load_groups_B, self.y_vars, "B", total_demand_B)
+            _add_cross_group(load_groups_B, self.y_vars, "B")
 
         dept_penalty = float(self.setting.penalty_map.get("diff", {"value": 1}).get("value", 1.0))
         target_depts = ["D16", "D17"]
@@ -3134,79 +3168,59 @@ class Optimizer:
                                         "description": f"{member_name} 優先度: {score:.3f} (業務: {dept})"
                                     })
 
-            workload_penalty = float(self.setting.penalty_map.get("workload", {"value": 1}).get("value", 1.0))
-            if workload_penalty > 0:
+            diff_cfg = self.setting.penalty_map.get("diff", {"value": 1, "thres": 0})
+            diff_report_penalty = float(diff_cfg.get("value", 1.0))
+            diff_report_thres_pct = int(diff_cfg.get("thres", 0))
+            if diff_report_penalty > 0:
                 duty_counts = {}
                 if self.duty_template:
                     for assignment in self.duty_template.assignments:
                         member_name = assignment['name']
                         duty_counts[member_name] = duty_counts.get(member_name, 0) + 1
                 
+                def _report_load_group(job, member_list, var_dict, role_label):
+                    load_groups = {}
+                    for m in member_list:
+                        load_type = job.load.get(m, "normal")
+                        if load_type == "reserve":
+                            continue
+                        load_groups.setdefault(load_type, []).append(m)
+
+                    for load_type, members in load_groups.items():
+                        if len(members) <= 1:
+                            continue
+                        assignments = {}
+                        for m in members:
+                            member_name = job.aka_to_name.get(m, m)
+                            opt_count = sum(1 for w in W if get_var_value(var_dict.get((w, m))) == 1)
+                            duty_count = duty_counts.get(member_name, 0)
+                            assignments[m] = opt_count + duty_count
+
+                        assignment_counts = list(assignments.values())
+                        max_a = max(assignment_counts)
+                        min_a = min(assignment_counts)
+                        workload_diff = max_a - min_a
+
+                        avg_per_member = sum(assignment_counts) / len(assignment_counts)
+                        threshold_count = max(1, int(avg_per_member * diff_report_thres_pct / 100)) if diff_report_thres_pct > 0 else 0
+                        excess = max(0, workload_diff - threshold_count)
+
+                        if excess > 0:
+                            penalty_score = excess * diff_report_penalty
+                            rows_violation.append({
+                                "id": "",
+                                "penalty": f"diff_{load_type}",
+                                "score": penalty_score,
+                                "description": f"負荷平準化違反 ({load_type}): 最大{max_a}件 - 最小{min_a}件 = {workload_diff}件差 (許容{threshold_count}件)"
+                            })
+
                 if self.jobA is not None:
                     A_list = list(self.jobA.members["aka"])
-                    load_groups_A = {}
-                    for a in A_list:
-                        load_type = self.jobA.load.get(a, "normal")
-                        if load_type not in load_groups_A:
-                            load_groups_A[load_type] = []
-                        load_groups_A[load_type].append(a)
-
-                    for load_type, members in load_groups_A.items():
-                        if len(members) > 1:
-                            assignments = {}
-                            for a in members:
-                                member_name = self.jobA.aka_to_name.get(a, a)
-                                opt_count = sum(1 for w in W if get_var_value(self.x_vars.get((w, a))) == 1)
-                                duty_count = duty_counts.get(member_name, 0)
-                                total_count = opt_count + duty_count
-                                assignments[a] = total_count
-
-                            assignment_counts = list(assignments.values())
-                            max_assignments = max(assignment_counts)
-                            min_assignments = min(assignment_counts)
-                            workload_diff = max_assignments - min_assignments
-
-                            if workload_diff > 0:
-                                penalty_score = workload_diff * workload_penalty
-                                rows_violation.append({
-                                    "id": "",
-                                    "penalty": f"workload_{load_type}",
-                                    "score": penalty_score,
-                                    "description": f"負荷平準化違反 ({load_type}): 最大{max_assignments}件 - 最小{min_assignments}件 = {workload_diff}件差"
-                                })
+                    _report_load_group(self.jobA, A_list, self.x_vars, "A")
 
                 if self.jobB is not None:
                     B_list = list(self.jobB.members["aka"])
-                    load_groups_B = {}
-                    for b in B_list:
-                        load_type = self.jobB.load.get(b, "normal")
-                        if load_type not in load_groups_B:
-                            load_groups_B[load_type] = []
-                        load_groups_B[load_type].append(b)
-
-                    for load_type, members in load_groups_B.items():
-                        if len(members) > 1:
-                            assignments = {}
-                            for b in members:
-                                member_name = self.jobB.aka_to_name.get(b, b)
-                                opt_count = sum(1 for w in W if get_var_value(self.y_vars.get((w, b))) == 1)
-                                duty_count = duty_counts.get(member_name, 0)
-                                total_count = opt_count + duty_count
-                                assignments[b] = total_count
-
-                            assignment_counts = list(assignments.values())
-                            max_assignments = max(assignment_counts)
-                            min_assignments = min(assignment_counts)
-                            workload_diff = max_assignments - min_assignments
-
-                            if workload_diff > 0:
-                                penalty_score = workload_diff * workload_penalty
-                                rows_violation.append({
-                                    "id": "",
-                                    "penalty": f"workload_{load_type}",
-                                    "score": penalty_score,
-                                    "description": f"負荷平準化違反 ({load_type}): 最大{max_assignments}件 - 最小{min_assignments}件 = {workload_diff}件差"
-                                })
+                    _report_load_group(self.jobB, B_list, self.y_vars, "B")
 
             after_duty_penalty = float(self.setting.penalty_map.get("after_duty", {"value": 10}).get("value", 10.0))
             if after_duty_penalty > 0:
