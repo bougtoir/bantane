@@ -114,7 +114,9 @@ def _solve_with_highs(model, time_limit: float = 15.0) -> int:
 
     # Map solution back to PuLP model
     model_status = h.getModelStatus()
-    if model_status == highspy.kHighsModelStatusOptimal:
+    status_str = str(model_status)
+    logging.info('HiGHS raw model status: %s', status_str)
+    if "Optimal" in status_str:
         model.status = pulp.constants.LpStatusOptimal
         sol = h.getSolution()
         # PuLP writeMPS outputs variables in sorted order by name
@@ -124,7 +126,7 @@ def _solve_with_highs(model, time_limit: float = 15.0) -> int:
         # Set objective value
         info = h.getInfoValue("objective_function_value")
         model.objective_value = info[1] if isinstance(info, tuple) else info
-    elif model_status == highspy.kHighsModelStatusInfeasible:
+    elif "Infeasible" in status_str:
         model.status = pulp.constants.LpStatusInfeasible
     else:
         model.status = pulp.constants.LpStatusNotSolved
