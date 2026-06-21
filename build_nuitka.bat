@@ -80,11 +80,8 @@ set NUITKA_OPTS=%NUITKA_OPTS% --include-module=xlrd
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=openpyxl
 set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pulp.tests
 
-REM Include PuLP solver data files
-for /f "delims=" %%P in ('python -c "import pulp; import os; print(os.path.dirname(pulp.__file__))"') do set PULP_DIR=%%P
-if defined PULP_DIR (
-    set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir="%PULP_DIR%"=pulp
-)
+REM Include PuLP solver data files (cbc.exe etc.)
+set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=pulp
 
 set NUITKA_OPTS=%NUITKA_OPTS% --output-filename=BantaneShiftOptimizer.exe
 set NUITKA_OPTS=%NUITKA_OPTS% --output-dir=dist_nuitka
