@@ -66,30 +66,45 @@ def main():
         print(f"エラー: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # --- Generate ---
-    output_path = Path(args.output) if args.output else None
-    manager = LicenseManager(license_file=output_path)
+    # --- Determine output targets ---
+    script_dir = Path(__file__).resolve().parent
+    if args.output:
+        targets = [Path(args.output)]
+    else:
+        # Find all dist*/files/ and release/files/ directories
+        targets = []
+        for sub in sorted(script_dir.iterdir()):
+            if sub.is_dir():
+                files_sub = sub / "files"
+                if files_sub.is_dir():
+                    targets.append(files_sub / ".license")
+        if not targets:
+            # Fallback: create files/ next to this script
+            fallback = script_dir / "files"
+            fallback.mkdir(parents=True, exist_ok=True)
+            targets.append(fallback / ".license")
 
-    path, password = manager.generate_license(
-        user_id=user_id,
-        expiration_date=exp_date,
-    )
+    # --- Generate to each target ---
+    generated_paths = []
+    for target in targets:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        manager = LicenseManager(license_file=target)
+        path, password = manager.generate_license(
+            user_id=user_id,
+            expiration_date=exp_date,
+        )
+        generated_paths.append(path)
 
     print()
     print("=" * 55)
     print("  ライセンス発行完了")
     print("=" * 55)
-    print(f"  ファイル       : {path}")
+    for p in generated_paths:
+        print(f"  ファイル       : {p}")
     print(f"  ユーザーID     : {user_id}")
     print(f"  有効期限       : {exp_date.strftime('%Y年%m月%d日')}")
     print(f"  パスワード     : {password}")
     print("=" * 55)
-    print()
-    print("配布手順:")
-    print("  1. 上記の .license ファイルを対象PCへコピー")
-    print("  2. アプリの実行ファイル（.exe）と同じディレクトリの")
-    print("     files フォルダに配置")
-    print("  3. アプリ起動時に自動認証されます")
     print()
     print("※ パスワードは .license ファイル内に暗号化保存されています。")
     print("   ID/パスワード入力なしで起動できます。")
