@@ -78,6 +78,7 @@ set NUITKA_OPTS=%NUITKA_OPTS% --include-module=cryptography
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=jpholiday
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=xlrd
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=openpyxl
+set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pulp.tests
 
 REM Include PuLP solver data files
 for /f "delims=" %%P in ('python -c "import pulp; import os; print(os.path.dirname(pulp.__file__))"') do set PULP_DIR=%%P
