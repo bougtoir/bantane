@@ -35,7 +35,7 @@ def get_app_dir() -> Path:
     sets ``__compiled__`` instead of ``sys.frozen``.
     This function returns the correct directory in all cases.
     """
-    if getattr(sys, "frozen", False) or "__compiled__" in dir():
+    if getattr(sys, "frozen", False) or "__compiled__" in globals():
         # Running as a PyInstaller / Nuitka exe - use exe location
         return Path(sys.executable).parent
     else:

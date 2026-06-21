@@ -21,7 +21,7 @@ from typing import List, Optional, Tuple
 def _get_app_dir() -> Path:
     """Return the directory that contains the running executable / script."""
     import sys
-    if getattr(sys, "frozen", False) or "__compiled__" in dir():
+    if getattr(sys, "frozen", False) or "__compiled__" in globals():
         return Path(sys.executable).parent
     return Path(__file__).parent
 
