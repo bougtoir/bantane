@@ -114,7 +114,7 @@ REM Always create subfolders next to the exe in dist_nuitka
 if exist "dist_nuitka\BantaneShiftOptimizer.exe" (
     echo.
     echo ========================================
-    echo   Build Complete (Nuitka)
+    echo   Build Complete - Nuitka
     echo ========================================
     echo.
     echo Output: dist_nuitka\BantaneShiftOptimizer.exe
@@ -123,10 +123,10 @@ if exist "dist_nuitka\BantaneShiftOptimizer.exe" (
     mkdir dist_nuitka\files 2>nul
     mkdir dist_nuitka\input 2>nul
     mkdir dist_nuitka\output 2>nul
-    if exist "files\setting*.xlsx" (
-        xcopy /Y files\setting*.xlsx dist_nuitka\files\
+    if exist "files\*setting*.xlsx" (
+        xcopy /Y files\*setting*.xlsx dist_nuitka\files\
     ) else (
-        for %%f in (setting*.xlsx) do copy /Y "%%f" dist_nuitka\files\
+        for %%f in (*setting*.xlsx) do copy /Y "%%f" dist_nuitka\files\
     )
 ) else (
     echo.
@@ -150,10 +150,10 @@ REM Copy exe
 copy /Y dist_nuitka\BantaneShiftOptimizer.exe release\
 
 REM Copy setting files
-if exist "files\setting*.xlsx" (
-    xcopy /Y files\setting*.xlsx release\files\
+if exist "files\*setting*.xlsx" (
+    xcopy /Y files\*setting*.xlsx release\files\
 ) else (
-    for %%f in (setting*.xlsx) do copy /Y "%%f" release\files\
+    for %%f in (*setting*.xlsx) do copy /Y "%%f" release\files\
 )
 
 REM Copy license tools
@@ -168,7 +168,7 @@ echo ========================================
 echo.
 echo release\ contents:
 echo   release\BantaneShiftOptimizer.exe
-echo   release\files\setting*.xlsx
+echo   release\files\*setting*.xlsx
 echo   release\generate_license.bat
 echo   release\generate_license.py
 echo   release\license_manager.py

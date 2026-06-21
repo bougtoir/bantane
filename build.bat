@@ -88,10 +88,10 @@ if not exist "dist\input" mkdir dist\input
 if not exist "dist\output" mkdir dist\output
 
 REM Copy setting files to dist\files
-if exist "files\setting*.xlsx" (
-    xcopy /Y files\setting*.xlsx dist\files\
+if exist "files\*setting*.xlsx" (
+    xcopy /Y files\*setting*.xlsx dist\files\
 ) else (
-    for %%f in (setting*.xlsx) do copy /Y "%%f" dist\files\
+    for %%f in (*setting*.xlsx) do copy /Y "%%f" dist\files\
 )
 
 REM Create release folder structure
@@ -105,10 +105,10 @@ REM Copy exe
 copy /Y dist\BantaneShiftOptimizer.exe release\
 
 REM Copy setting files
-if exist "files\setting*.xlsx" (
-    xcopy /Y files\setting*.xlsx release\files\
+if exist "files\*setting*.xlsx" (
+    xcopy /Y files\*setting*.xlsx release\files\
 ) else (
-    for %%f in (setting*.xlsx) do copy /Y "%%f" release\files\
+    for %%f in (*setting*.xlsx) do copy /Y "%%f" release\files\
 )
 
 REM Copy license tools
@@ -123,7 +123,7 @@ echo ========================================
 echo.
 echo release\ フォルダの内容:
 echo   release\BantaneShiftOptimizer.exe
-echo   release\files\setting*.xlsx
+echo   release\files\*setting*.xlsx
 echo   release\generate_license.bat
 echo   release\generate_license.py
 echo   release\license_manager.py
