@@ -28,18 +28,25 @@ logging.basicConfig(filename="shift_app.log", level=logging.INFO, format="%(asct
 
 
 def get_app_dir() -> Path:
-    """Get the application directory, handling PyInstaller exe case.
-    
-    When running as a PyInstaller exe, __file__ points to a temporary extraction
-    directory, not the exe's location. This function returns the correct directory
-    in both cases.
+    """Get the application directory.
+
+    PyInstaller sets sys.frozen; Nuitka does not, but sys.executable
+    points to the compiled .exe rather than a Python interpreter.
+    In both cases we want the directory that contains the .exe.
     """
+    # PyInstaller
     if getattr(sys, "frozen", False):
-        # Running as a PyInstaller exe - use exe location
-        return Path(sys.executable).parent
-    else:
-        # Running as a normal script
-        return Path(__file__).parent
+        return Path(sys.executable).resolve().parent
+    # Nuitka / other bundlers: sys.executable is NOT a python interpreter
+    try:
+        exe_stem = Path(sys.executable).stem.lower()
+        if exe_stem not in ("python", "python3", "pythonw", "python3w") \
+                and not exe_stem.startswith("python3."):
+            return Path(sys.executable).resolve().parent
+    except Exception:
+        pass
+    # Normal script execution
+    return Path(__file__).resolve().parent
 
 
 def get_system_japanese_font():
@@ -558,6 +565,17 @@ def derive_shift_from_kintai(kintai_df: pd.DataFrame, members_df: pd.DataFrame,
     extra_aka = kintai_aka - all_members_aka
     if extra_aka:
         logging.warning(f"kintaiファイルに未知のaka: {', '.join(sorted(extra_aka))}")
+        # Resolve aka to display names for GUI warning
+        for aka in sorted(extra_aka):
+            rows = kintai_df[kintai_df['aka'].astype(str) == aka]
+            if not rows.empty and 'name' in kintai_df.columns:
+                name = str(rows.iloc[0]['name']).strip()
+                if name and name.lower() != 'nan':
+                    _UNREGISTERED_STAFF.append(name)
+                else:
+                    _UNREGISTERED_STAFF.append(aka)
+            else:
+                _UNREGISTERED_STAFF.append(aka)
     
     # load列からreserve（ダミー）スタッフを特定
     reserve_aka = set()
@@ -1087,6 +1105,25 @@ class Setting:
                 duty_name = str(val).strip()
                 if duty_name:
                     self.duty_priority_B.append(duty_name)
+
+    def get_reserve_names(self) -> Set[str]:
+        """Return display names of all reserve (dummy) staff from jobA/jobB."""
+        reserve_names: Set[str] = set()
+        for job_df, dict_df in [(self.jobA_df, self.dictA_df), (self.jobB_df, self.dictB_df)]:
+            if job_df is None or 'load' not in job_df.columns:
+                continue
+            reserve_akas = set()
+            for _, r in job_df.iterrows():
+                if str(r.get('load', '')).strip().lower() == 'reserve':
+                    reserve_akas.add(str(r['aka']).strip())
+            if dict_df is not None and 'aka' in dict_df.columns and 'name' in dict_df.columns:
+                for _, r in dict_df.iterrows():
+                    aka = str(r['aka']).strip()
+                    if aka in reserve_akas:
+                        name = str(r['name']).strip()
+                        if name and name.lower() != 'nan':
+                            reserve_names.add(name)
+        return reserve_names
 
 
 class JobData:
@@ -2030,7 +2067,7 @@ class Optimizer:
                     if need > len(self.jobB.avail_by_date.get(d, set())):
                         self.infeasible_reasons.append(f"{d}: Bの総必要数{need} > 当日出勤可能{len(self.jobB.avail_by_date.get(d, set()))}")
 
-            prefer_val = float(self.setting.penalty_map.get("prefer", {"value": 10}).get("value", 10.0))
+            prefer_val = float(self.setting.penalty_map.get("prefer", {"value": 1}).get("value", 1.0))
             for w in W:
                 wr = w_rows[w]
                 room = str(wr.get("room"))
@@ -2287,6 +2324,67 @@ class Optimizer:
                                     if coeff > 0:
                                         objective_terms.append(self.y_vars[(w, b)] * coeff)
 
+            dummy_penalty_value = float(self.setting.penalty_map.get("dummy", {"value": 10}).get("value", 10.0))
+            if include_reserve and dummy_penalty_value > 0:
+                reserve_akas_A = set()
+                reserve_akas_B = set()
+                if self.jobA is not None:
+                    reserve_akas_A = {a for a in A_list if self.jobA.load.get(a, "normal") == "reserve"}
+                if self.jobB is not None:
+                    reserve_akas_B = {b for b in B_list if self.jobB.load.get(b, "normal") == "reserve"}
+
+                real_akas_A = set(A_list) - reserve_akas_A
+                real_akas_B = set(B_list) - reserve_akas_B
+
+                # Build avoid lookup per member
+                avoid_tokens_A = {}
+                if self.jobA is not None:
+                    for _, row in self.jobA.members.iterrows():
+                        aka = str(row["aka"])
+                        avoid_tokens_A[aka] = row.get("avoid_tokens", set()) if "avoid_tokens" in row.index else set()
+                avoid_tokens_B = {}
+                if self.jobB is not None:
+                    for _, row in self.jobB.members.iterrows():
+                        aka = str(row["aka"])
+                        avoid_tokens_B[aka] = row.get("avoid_tokens", set()) if "avoid_tokens" in row.index else set()
+
+                coeff_base = int(dummy_penalty_value)
+                # Much higher penalty when real non-avoid candidates exist
+                coeff_strong = coeff_base * 100
+                for w in W:
+                    wr = w_rows[w]
+                    room = str(wr.get("room", ""))
+                    dept = str(wr.get("dept", ""))
+
+                    # Count real candidates (has var and no avoid)
+                    has_real_candidate_A = False
+                    for a in real_akas_A:
+                        if (w, a) in self.x_vars:
+                            m_avoid = avoid_tokens_A.get(a, set())
+                            if room not in m_avoid and dept not in m_avoid and f"W{w}" not in m_avoid:
+                                has_real_candidate_A = True
+                                break
+
+                    has_real_candidate_B = False
+                    for b in real_akas_B:
+                        if (w, b) in self.y_vars:
+                            m_avoid = avoid_tokens_B.get(b, set())
+                            if room not in m_avoid and dept not in m_avoid and f"W{w}" not in m_avoid:
+                                has_real_candidate_B = True
+                                break
+
+                    # Apply strong penalty when real candidates exist, base penalty otherwise
+                    for a in reserve_akas_A:
+                        if (w, a) in self.x_vars:
+                            c = coeff_strong if has_real_candidate_A else coeff_base
+                            if c > 0:
+                                objective_terms.append(self.x_vars[(w, a)] * c)
+                    for b in reserve_akas_B:
+                        if (w, b) in self.y_vars:
+                            c = coeff_strong if has_real_candidate_B else coeff_base
+                            if c > 0:
+                                objective_terms.append(self.y_vars[(w, b)] * c)
+
             if objective_terms:
                 self.model += pulp.lpSum(objective_terms), "Objective"
 
@@ -2314,64 +2412,98 @@ class Optimizer:
             return Optimizer.INFEASIBLE
 
     def _add_workload_leveling_constraints(self, W, w_rows, A_list, B_list):
-        """Add constraints to level workload within same job type and load groups, including duty template assignments.
-        
-        Note: Reserve staff are excluded from workload leveling as they are only used as emergency backup.
+        """Add constraints to level workload within same job type and load groups.
+
+        Uses penalties from setting:
+          - diff: intra-group leveling (thres=allowed % difference, value=penalty weight)
+          - more: cross-group constraint for load='more' staff (+thres% vs normal avg)
+          - less: cross-group constraint for load='less' staff (-thres% vs normal avg)
+
+        Reserve staff are excluded from workload leveling.
         """
-        diff_penalty = float(self.setting.penalty_map.get("diff", {"value": 1}).get("value", 1.0))
+        diff_cfg = self.setting.penalty_map.get("diff", {"value": 1, "thres": 0})
+        diff_penalty = float(diff_cfg.get("value", 1.0))
+        diff_thres_pct = int(diff_cfg.get("thres", 0))
+
+        more_cfg = self.setting.penalty_map.get("more", {"value": 1, "thres": 20})
+        more_penalty = float(more_cfg.get("value", 1.0))
+        more_thres_pct = int(more_cfg.get("thres", 20))
+
+        less_cfg = self.setting.penalty_map.get("less", {"value": 1, "thres": 20})
+        less_penalty = float(less_cfg.get("value", 1.0))
+        less_thres_pct = int(less_cfg.get("thres", 20))
+
         penalty_terms = []
 
-        if self.jobA is not None:
-            load_groups_A = {}
-            for a in A_list:
-                load_type = self.jobA.load.get(a, "normal")
-                if load_type == "reserve":
+        def _build_load_groups(members_list, job):
+            groups = {}
+            for m in members_list:
+                lt = job.load.get(m, "normal")
+                if lt == "reserve":
                     continue
-                if load_type not in load_groups_A:
-                    load_groups_A[load_type] = []
-                load_groups_A[load_type].append(a)
+                groups.setdefault(lt, []).append(m)
+            return groups
 
-            for load_type, members in load_groups_A.items():
-                if len(members) > 1:
-                    for i, a1 in enumerate(members):
-                        for a2 in members[i+1:]:
-                            work1_opt = pulp.lpSum([
-                                self.x_vars[(w, a1)] for w in W if (w, a1) in self.x_vars
-                            ])
-                            work2_opt = pulp.lpSum([
-                                self.x_vars[(w, a2)] for w in W if (w, a2) in self.x_vars
-                            ])
+        def _work_expr(var_dict, member, work_ids):
+            return pulp.lpSum([var_dict[(w, member)] for w in work_ids if (w, member) in var_dict])
 
-                            diff_var = pulp.LpVariable(f"diff_A_{a1}_{a2}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
-                            self.model += work1_opt - work2_opt <= diff_var, f"diff_A_{a1}_{a2}_upper"
-                            self.model += work2_opt - work1_opt <= diff_var, f"diff_A_{a1}_{a2}_lower"
-                            penalty_terms.append(diff_var * diff_penalty)
+        def _add_intra_group(load_groups, var_dict, role_prefix, total_demand):
+            """A: intra-group leveling with diff thres."""
+            for load_type, members in load_groups.items():
+                if len(members) <= 1:
+                    continue
+                avg_per_member = total_demand / len(members) if len(members) > 0 else 1
+                threshold_count = max(1, int(avg_per_member * diff_thres_pct / 100)) if diff_thres_pct > 0 else 0
+                for i, m1 in enumerate(members):
+                    for m2 in members[i+1:]:
+                        w1 = _work_expr(var_dict, m1, W)
+                        w2 = _work_expr(var_dict, m2, W)
+                        dv = pulp.LpVariable(f"diff_{role_prefix}_{m1}_{m2}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
+                        self.model += w1 - w2 - threshold_count <= dv, f"diff_{role_prefix}_{m1}_{m2}_upper"
+                        self.model += w2 - w1 - threshold_count <= dv, f"diff_{role_prefix}_{m1}_{m2}_lower"
+                        penalty_terms.append(dv * diff_penalty)
+
+        def _add_cross_group(load_groups, var_dict, role_prefix):
+            """B: cross-group more/less constraints vs normal average."""
+            normal_members = load_groups.get("normal", [])
+            if not normal_members:
+                return
+            count_normal = len(normal_members)
+            sum_normal = pulp.lpSum([_work_expr(var_dict, n, W) for n in normal_members])
+
+            more_members = load_groups.get("more", [])
+            if more_members and more_penalty > 0:
+                ratio = 1.0 + more_thres_pct / 100.0
+                for m in more_members:
+                    work_m = _work_expr(var_dict, m, W)
+                    # target = sum_normal / count_normal * ratio
+                    # penalize shortfall: target - work_m > 0
+                    sv = pulp.LpVariable(f"more_{role_prefix}_{m}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
+                    self.model += sum_normal * ratio / count_normal - work_m <= sv, f"more_{role_prefix}_{m}_short"
+                    penalty_terms.append(sv * more_penalty)
+
+            less_members = load_groups.get("less", [])
+            if less_members and less_penalty > 0:
+                ratio = 1.0 - less_thres_pct / 100.0
+                for m in less_members:
+                    work_m = _work_expr(var_dict, m, W)
+                    # target = sum_normal / count_normal * ratio
+                    # penalize excess: work_m - target > 0
+                    sv = pulp.LpVariable(f"less_{role_prefix}_{m}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
+                    self.model += work_m - sum_normal * ratio / count_normal <= sv, f"less_{role_prefix}_{m}_over"
+                    penalty_terms.append(sv * less_penalty)
+
+        if self.jobA is not None:
+            load_groups_A = _build_load_groups(A_list, self.jobA)
+            total_demand_A = sum(int(w_rows[w].get("need_A", 0)) for w in W)
+            _add_intra_group(load_groups_A, self.x_vars, "A", total_demand_A)
+            _add_cross_group(load_groups_A, self.x_vars, "A")
 
         if self.jobB is not None:
-            load_groups_B = {}
-            for b in B_list:
-                load_type = self.jobB.load.get(b, "normal")
-                if load_type == "reserve":
-                    continue
-                if load_type not in load_groups_B:
-                    load_groups_B[load_type] = []
-                load_groups_B[load_type].append(b)
-
-            for load_type, members in load_groups_B.items():
-                if len(members) > 1:
-                    for i, b1 in enumerate(members):
-                        for b2 in members[i+1:]:
-                            work1_opt = pulp.lpSum([
-                                self.y_vars[(w, b1)] for w in W if (w, b1) in self.y_vars
-                            ])
-                            work2_opt = pulp.lpSum([
-                                self.y_vars[(w, b2)] for w in W if (w, b2) in self.y_vars
-                            ])
-
-                            diff_var = pulp.LpVariable(f"diff_B_{b1}_{b2}", lowBound=0, upBound=len(W), cat=pulp.LpInteger)
-                            self.model += work1_opt - work2_opt <= diff_var, f"diff_B_{b1}_{b2}_upper"
-                            self.model += work2_opt - work1_opt <= diff_var, f"diff_B_{b1}_{b2}_lower"
-                            penalty_terms.append(diff_var * diff_penalty)
+            load_groups_B = _build_load_groups(B_list, self.jobB)
+            total_demand_B = sum(int(w_rows[w].get("need_B", 0)) for w in W)
+            _add_intra_group(load_groups_B, self.y_vars, "B", total_demand_B)
+            _add_cross_group(load_groups_B, self.y_vars, "B")
 
         dept_penalty = float(self.setting.penalty_map.get("diff", {"value": 1}).get("value", 1.0))
         target_depts = ["D16", "D17"]
@@ -2444,11 +2576,176 @@ class Optimizer:
 
         return penalty_terms
 
+    # ------------------------------------------------------------------
+    # Post-processing: greedily swap dummy assignments to real staff
+    # ------------------------------------------------------------------
+    def post_process_reduce_dummy(self):
+        """After solving, try to replace dummy (reserve) staff with real staff.
+
+        For every work item assigned to a dummy, look for a real staff member
+        who is available, has no avoid conflict, no time overlap with their
+        current assignments or personal duties, and swap them in.
+
+        Stores overrides in ``self._assignment_overrides`` which
+        ``extract_output`` will consult.
+        """
+        self._assignment_overrides: Dict[tuple, int] = {}  # (w, aka) -> 0 or 1
+
+        if self.jobA is None and self.jobB is None:
+            return
+
+        Wdf = self.work.work.copy()
+        w_rows = {int(r["id"]): r for _, r in Wdf.iterrows()}
+        W = list(Wdf["id"].astype(int))
+
+        min_interval = self.min_interval
+
+        def time_overlaps(s1, e1, s2, e2):
+            return not (e1 + min_interval <= s2 or e2 + min_interval <= s1)
+
+        def _get_duty_intervals(member_name, date_iso):
+            intervals = []
+            if self.duty_template:
+                for a in self.duty_template.get_assignments_for_date(date_iso):
+                    if a['name'] == member_name:
+                        intervals.append((hhmm_to_minutes(a['start_time']),
+                                          hhmm_to_minutes(a['end_time'])))
+            return intervals
+
+        def _solved_value(var_dict, key):
+            """Return effective assignment value considering overrides."""
+            if key in self._assignment_overrides:
+                return self._assignment_overrides[key]
+            var = var_dict.get(key)
+            if var is None:
+                return 0
+            return 1 if pulp.value(var) == 1 else 0
+
+        # Process each job type (A and B) independently
+        for job, var_dict, role_label in [
+            (self.jobA, self.x_vars, "A"),
+            (self.jobB, self.y_vars, "B"),
+        ]:
+            if job is None:
+                continue
+
+            all_akas = list(job.members["aka"])
+            reserve_akas = {a for a in all_akas if job.load.get(a, "normal") == "reserve"}
+            real_akas = [a for a in all_akas if a not in reserve_akas]
+
+            if not reserve_akas:
+                continue
+
+            # Build current assignments per staff: aka -> list of (work_id, start_min, end_min, date_iso)
+            staff_assignments: Dict[str, List[tuple]] = {a: [] for a in all_akas}
+            for w in W:
+                wr = w_rows[w]
+                for a in all_akas:
+                    if _solved_value(var_dict, (w, a)) == 1:
+                        staff_assignments[a].append((
+                            w,
+                            int(wr["start_min"]),
+                            int(wr["end_min"]),
+                            self._work_date_to_iso(wr["date"]),
+                        ))
+
+            # Collect dummy assignments
+            dummy_assignments = []
+            for w in W:
+                wr = w_rows[w]
+                date_iso = self._work_date_to_iso(wr["date"])
+                for d_aka in reserve_akas:
+                    if _solved_value(var_dict, (w, d_aka)) == 1:
+                        dummy_assignments.append((w, d_aka, date_iso))
+
+            if not dummy_assignments:
+                continue
+
+            # Build avoid tokens per member
+            avoid_map = {}
+            for _, row in job.members.iterrows():
+                aka = str(row["aka"])
+                avoid_map[aka] = row.get("avoid_tokens", set()) if "avoid_tokens" in row.index else set()
+
+            swapped = 0
+            for w, d_aka, date_iso in dummy_assignments:
+                wr = w_rows[w]
+                w_start = int(wr["start_min"])
+                w_end = int(wr["end_min"])
+                w_room = str(wr["room"])
+                w_dept = str(wr["dept"])
+
+                best_candidate = None
+                best_load = float('inf')
+
+                for r_aka in real_akas:
+                    # 1. Available on this date?
+                    if r_aka not in job.avail_by_date.get(date_iso, set()):
+                        continue
+
+                    # 2. Leave type check
+                    leave = job.leave_type_by_date.get(date_iso, {}).get(r_aka, '')
+                    if leave == '1':
+                        continue
+                    noon = hhmm_to_minutes(self.setting.config_map.get("noon", 1230))
+                    if leave == 'A' and w_start < noon:
+                        continue
+                    if leave == 'P' and w_end > noon:
+                        continue
+
+                    # 3. Avoid constraint?
+                    m_avoid = avoid_map.get(r_aka, set())
+                    if w_room in m_avoid or w_dept in m_avoid or f"W{w}" in m_avoid:
+                        continue
+
+                    # 4. Time overlap with current assignments?
+                    conflict = False
+                    for (aw, a_start, a_end, a_date) in staff_assignments[r_aka]:
+                        if a_date == date_iso and time_overlaps(w_start, w_end, a_start, a_end):
+                            conflict = True
+                            break
+                    if conflict:
+                        continue
+
+                    # 5. Duty conflict?
+                    member_name = job.aka_to_name.get(r_aka, r_aka)
+                    duty_intervals = _get_duty_intervals(member_name, date_iso)
+                    for d_start, d_end in duty_intervals:
+                        if time_overlaps(w_start, w_end, d_start, d_end):
+                            conflict = True
+                            break
+                    if conflict:
+                        continue
+
+                    # Pick candidate with fewest current assignments (balance load)
+                    load = len(staff_assignments[r_aka])
+                    if load < best_load:
+                        best_load = load
+                        best_candidate = r_aka
+
+                if best_candidate is not None:
+                    # Swap: remove dummy, add real
+                    self._assignment_overrides[(w, d_aka)] = 0
+                    self._assignment_overrides[(w, best_candidate)] = 1
+                    # Update tracking
+                    staff_assignments[d_aka] = [
+                        x for x in staff_assignments[d_aka] if x[0] != w
+                    ]
+                    staff_assignments[best_candidate].append(
+                        (w, w_start, w_end, date_iso)
+                    )
+                    swapped += 1
+
+            if swapped > 0:
+                logging.info(f"ポスト処理: {role_label}のダミー割当を{swapped}件、実スタッフに置換しました")
+
     def extract_output(self):
         rows_assign = []
         rows_available = []
         rows_stats = []
         rows_violation = self._extract_violations()
+
+        overrides = getattr(self, '_assignment_overrides', {})
 
         Wdf = self.work.work.copy()
         for _, wr in Wdf.iterrows():
@@ -2467,14 +2764,24 @@ class Optimizer:
 
             if self.jobA is not None:
                 for a in list(self.jobA.members["aka"]):
-                    var = self.x_vars.get((w, a))
-                    if var is not None and pulp.value(var) == 1:
-                        assA_names.append(self.jobA.aka_to_name.get(a, a))
+                    key = (w, a)
+                    if key in overrides:
+                        if overrides[key] == 1:
+                            assA_names.append(self.jobA.aka_to_name.get(a, a))
+                    else:
+                        var = self.x_vars.get(key)
+                        if var is not None and pulp.value(var) == 1:
+                            assA_names.append(self.jobA.aka_to_name.get(a, a))
             if self.jobB is not None:
                 for b in list(self.jobB.members["aka"]):
-                    var = self.y_vars.get((w, b))
-                    if var is not None and pulp.value(var) == 1:
-                        assB_names.append(self.jobB.aka_to_name.get(b, b))
+                    key = (w, b)
+                    if key in overrides:
+                        if overrides[key] == 1:
+                            assB_names.append(self.jobB.aka_to_name.get(b, b))
+                    else:
+                        var = self.y_vars.get(key)
+                        if var is not None and pulp.value(var) == 1:
+                            assB_names.append(self.jobB.aka_to_name.get(b, b))
 
             rows_assign.append(
                 {
@@ -2511,9 +2818,13 @@ class Optimizer:
 
                     assigned_work = []
                     for _, wr in date_work.iterrows():
-                        var = self.x_vars.get((int(wr["id"]), a))
-                        var_value = pulp.value(var) if var is not None else 0
-                        if var_value == 1:
+                        key = (int(wr["id"]), a)
+                        if key in overrides:
+                            val = overrides[key]
+                        else:
+                            var = self.x_vars.get(key)
+                            val = 1 if var is not None and pulp.value(var) == 1 else 0
+                        if val == 1:
                             start_min = int(wr["start_min"])
                             end_min = int(wr["end_min"])
                             assigned_work.append((start_min, end_min))
@@ -2548,9 +2859,13 @@ class Optimizer:
 
                     assigned_work = []
                     for _, wr in date_work.iterrows():
-                        var = self.y_vars.get((int(wr["id"]), b))
-                        var_value = pulp.value(var) if var is not None else 0
-                        if var_value == 1:
+                        key = (int(wr["id"]), b)
+                        if key in overrides:
+                            val = overrides[key]
+                        else:
+                            var = self.y_vars.get(key)
+                            val = 1 if var is not None and pulp.value(var) == 1 else 0
+                        if val == 1:
                             start_min = int(wr["start_min"])
                             end_min = int(wr["end_min"])
                             assigned_work.append((start_min, end_min))
@@ -2680,9 +2995,13 @@ class Optimizer:
                 member_name = self.jobA.aka_to_name.get(a, a)
                 opt_id_list = []
                 for _, wr in Wdf.iterrows():
-                    var = self.x_vars.get((int(wr["id"]), a))
-                    var_value = pulp.value(var) if var is not None else 0
-                    if var_value == 1:
+                    key = (int(wr["id"]), a)
+                    if key in overrides:
+                        val = overrides[key]
+                    else:
+                        var = self.x_vars.get(key)
+                        val = 1 if var is not None and pulp.value(var) == 1 else 0
+                    if val == 1:
                         opt_id_list.append((wr["date"], wr["start_min"], str(int(wr["id"]))))
                 
                 duty_list = duty_ids_by_member.get(member_name, [])
@@ -2705,9 +3024,13 @@ class Optimizer:
                 member_name = self.jobB.aka_to_name.get(b, b)
                 opt_id_list = []
                 for _, wr in Wdf.iterrows():
-                    var = self.y_vars.get((int(wr["id"]), b))
-                    var_value = pulp.value(var) if var is not None else 0
-                    if var_value == 1:
+                    key = (int(wr["id"]), b)
+                    if key in overrides:
+                        val = overrides[key]
+                    else:
+                        var = self.y_vars.get(key)
+                        val = 1 if var is not None and pulp.value(var) == 1 else 0
+                    if val == 1:
                         opt_id_list.append((wr["date"], wr["start_min"], str(int(wr["id"]))))
                 
                 duty_list = duty_ids_by_member.get(member_name, [])
@@ -2852,79 +3175,59 @@ class Optimizer:
                                         "description": f"{member_name} 優先度: {score:.3f} (業務: {dept})"
                                     })
 
-            workload_penalty = float(self.setting.penalty_map.get("workload", {"value": 1}).get("value", 1.0))
-            if workload_penalty > 0:
+            diff_cfg = self.setting.penalty_map.get("diff", {"value": 1, "thres": 0})
+            diff_report_penalty = float(diff_cfg.get("value", 1.0))
+            diff_report_thres_pct = int(diff_cfg.get("thres", 0))
+            if diff_report_penalty > 0:
                 duty_counts = {}
                 if self.duty_template:
                     for assignment in self.duty_template.assignments:
                         member_name = assignment['name']
                         duty_counts[member_name] = duty_counts.get(member_name, 0) + 1
                 
+                def _report_load_group(job, member_list, var_dict, role_label):
+                    load_groups = {}
+                    for m in member_list:
+                        load_type = job.load.get(m, "normal")
+                        if load_type == "reserve":
+                            continue
+                        load_groups.setdefault(load_type, []).append(m)
+
+                    for load_type, members in load_groups.items():
+                        if len(members) <= 1:
+                            continue
+                        assignments = {}
+                        for m in members:
+                            member_name = job.aka_to_name.get(m, m)
+                            opt_count = sum(1 for w in W if get_var_value(var_dict.get((w, m))) == 1)
+                            duty_count = duty_counts.get(member_name, 0)
+                            assignments[m] = opt_count + duty_count
+
+                        assignment_counts = list(assignments.values())
+                        max_a = max(assignment_counts)
+                        min_a = min(assignment_counts)
+                        workload_diff = max_a - min_a
+
+                        avg_per_member = sum(assignment_counts) / len(assignment_counts)
+                        threshold_count = max(1, int(avg_per_member * diff_report_thres_pct / 100)) if diff_report_thres_pct > 0 else 0
+                        excess = max(0, workload_diff - threshold_count)
+
+                        if excess > 0:
+                            penalty_score = excess * diff_report_penalty
+                            rows_violation.append({
+                                "id": "",
+                                "penalty": f"diff_{load_type}",
+                                "score": penalty_score,
+                                "description": f"負荷平準化違反 ({load_type}): 最大{max_a}件 - 最小{min_a}件 = {workload_diff}件差 (許容{threshold_count}件)"
+                            })
+
                 if self.jobA is not None:
                     A_list = list(self.jobA.members["aka"])
-                    load_groups_A = {}
-                    for a in A_list:
-                        load_type = self.jobA.load.get(a, "normal")
-                        if load_type not in load_groups_A:
-                            load_groups_A[load_type] = []
-                        load_groups_A[load_type].append(a)
-
-                    for load_type, members in load_groups_A.items():
-                        if len(members) > 1:
-                            assignments = {}
-                            for a in members:
-                                member_name = self.jobA.aka_to_name.get(a, a)
-                                opt_count = sum(1 for w in W if get_var_value(self.x_vars.get((w, a))) == 1)
-                                duty_count = duty_counts.get(member_name, 0)
-                                total_count = opt_count + duty_count
-                                assignments[a] = total_count
-
-                            assignment_counts = list(assignments.values())
-                            max_assignments = max(assignment_counts)
-                            min_assignments = min(assignment_counts)
-                            workload_diff = max_assignments - min_assignments
-
-                            if workload_diff > 0:
-                                penalty_score = workload_diff * workload_penalty
-                                rows_violation.append({
-                                    "id": "",
-                                    "penalty": f"workload_{load_type}",
-                                    "score": penalty_score,
-                                    "description": f"負荷平準化違反 ({load_type}): 最大{max_assignments}件 - 最小{min_assignments}件 = {workload_diff}件差"
-                                })
+                    _report_load_group(self.jobA, A_list, self.x_vars, "A")
 
                 if self.jobB is not None:
                     B_list = list(self.jobB.members["aka"])
-                    load_groups_B = {}
-                    for b in B_list:
-                        load_type = self.jobB.load.get(b, "normal")
-                        if load_type not in load_groups_B:
-                            load_groups_B[load_type] = []
-                        load_groups_B[load_type].append(b)
-
-                    for load_type, members in load_groups_B.items():
-                        if len(members) > 1:
-                            assignments = {}
-                            for b in members:
-                                member_name = self.jobB.aka_to_name.get(b, b)
-                                opt_count = sum(1 for w in W if get_var_value(self.y_vars.get((w, b))) == 1)
-                                duty_count = duty_counts.get(member_name, 0)
-                                total_count = opt_count + duty_count
-                                assignments[b] = total_count
-
-                            assignment_counts = list(assignments.values())
-                            max_assignments = max(assignment_counts)
-                            min_assignments = min(assignment_counts)
-                            workload_diff = max_assignments - min_assignments
-
-                            if workload_diff > 0:
-                                penalty_score = workload_diff * workload_penalty
-                                rows_violation.append({
-                                    "id": "",
-                                    "penalty": f"workload_{load_type}",
-                                    "score": penalty_score,
-                                    "description": f"負荷平準化違反 ({load_type}): 最大{max_assignments}件 - 最小{min_assignments}件 = {workload_diff}件差"
-                                })
+                    _report_load_group(self.jobB, B_list, self.y_vars, "B")
 
             after_duty_penalty = float(self.setting.penalty_map.get("after_duty", {"value": 10}).get("value", 10.0))
             if after_duty_penalty > 0:
@@ -3975,8 +4278,8 @@ def apply_calendar_formatting(ws, all_dates, target_year: int, target_month: int
         cell_a1.font = Font(color="FFFFFF")
 
 
-BANTANE_NAMES = {"ばんたね１", "ばんたね２", "ばんたね３", "ばんたね４", "ばんたね５",
-                 "ばんたね６", "ばんたね７", "ばんたね８", "ばんたね９", "ばんたね１０"}
+_RESERVE_NAMES: Set[str] = set()
+_UNREGISTERED_STAFF: List[str] = []
 
 WORD_JOINER = '\u2060'
 
@@ -3996,9 +4299,15 @@ def protect_text_for_excel(text: str, separator: str = ', ') -> str:
     return separator.join(protected_names)
 
 
+def set_reserve_names(names: Set[str]):
+    """Set the global reserve (dummy) staff names from setting load='reserve'."""
+    global _RESERVE_NAMES
+    _RESERVE_NAMES = names
+
+
 def is_bantane_name(name: str) -> bool:
-    """Check if a name is a bantane (dummy) staff name."""
-    return name.strip() in BANTANE_NAMES
+    """Check if a name is a reserve (dummy) staff name."""
+    return name.strip() in _RESERVE_NAMES
 
 
 def filter_bantane_from_text(text: str, separator: str = ",") -> str:
@@ -4476,18 +4785,54 @@ def generate_weekly_gantt_images(assign_df: pd.DataFrame, output_path: Path, tar
                 dept_display = work_data.dept_name.get(r['dept'], r['dept']) if work_data else r['dept']
 
                 line1 = f'ID:{r["id"]} 部署:{dept_display}'
-                line2 = f'職種1:{r["assign_A"]}' if r["assign_A"] and str(r["assign_A"]).strip() and str(r["assign_A"]) != 'nan' else ''
-                line3 = f'職種2:{r["assign_B"]}' if r["assign_B"] and str(r["assign_B"]).strip() and str(r["assign_B"]) != 'nan' else ''
+                assign_A_str = str(r["assign_A"]).strip() if r["assign_A"] and str(r["assign_A"]).strip() and str(r["assign_A"]) != 'nan' else ''
+                assign_B_str = str(r["assign_B"]).strip() if r["assign_B"] and str(r["assign_B"]).strip() and str(r["assign_B"]) != 'nan' else ''
 
                 line_spacing = bar_height / 4
                 ax.text(start_hour + duration/2, y_pos + line_spacing, line1,
                        ha='center', va='center', fontsize=font_size, color='black', weight='bold')
-                if line2:
-                    ax.text(start_hour + duration/2, y_pos, line2,
-                           ha='center', va='center', fontsize=font_size, color='black', weight='bold')
-                if line3:
-                    ax.text(start_hour + duration/2, y_pos - line_spacing, line3,
-                           ha='center', va='center', fontsize=font_size, color='black', weight='bold')
+
+                def _render_assign_line(ax, x, y, prefix, assign_str, fontsize):
+                    """Render assignment line with bantane names in red."""
+                    if not assign_str:
+                        return
+                    names = [n.strip() for n in assign_str.split(',')]
+                    has_bantane = any(is_bantane_name(n) for n in names)
+                    if not has_bantane:
+                        ax.text(x, y, f'{prefix}{assign_str}',
+                               ha='center', va='center', fontsize=fontsize, color='black', weight='bold')
+                    else:
+                        # Render prefix + non-bantane names in black, bantane names in red
+                        parts = []
+                        for n in names:
+                            parts.append((n, 'red' if is_bantane_name(n) else 'black'))
+                        full_text = f'{prefix}' + ','.join(n for n, _ in parts)
+                        # Use centered text with colored segments via individual text calls
+                        # First render invisible full text to get centering, then overlay colored parts
+                        txt_obj = ax.text(x, y, full_text,
+                                         ha='center', va='center', fontsize=fontsize, color='black', weight='bold', alpha=0)
+                        renderer = ax.figure.canvas.get_renderer()
+                        bbox = txt_obj.get_window_extent(renderer=renderer)
+                        inv = ax.transData.inverted()
+                        left_data, _ = inv.transform((bbox.x0, bbox.y0))
+                        # Render from left
+                        cursor_x = left_data
+                        segments = [(prefix, 'black')]
+                        for i, (n, c) in enumerate(parts):
+                            segments.append((n, c))
+                            if i < len(parts) - 1:
+                                segments.append((',', 'black'))
+                        for seg_text, seg_color in segments:
+                            t = ax.text(cursor_x, y, seg_text,
+                                       ha='left', va='center', fontsize=fontsize, color=seg_color, weight='bold')
+                            seg_bbox = t.get_window_extent(renderer=renderer)
+                            seg_width_data = inv.transform((seg_bbox.x1, 0))[0] - inv.transform((seg_bbox.x0, 0))[0]
+                            cursor_x += seg_width_data
+
+                if assign_A_str:
+                    _render_assign_line(ax, start_hour + duration/2, y_pos, '職種1:', assign_A_str, font_size)
+                if assign_B_str:
+                    _render_assign_line(ax, start_hour + duration/2, y_pos - line_spacing, '職種2:', assign_B_str, font_size)
 
             ax.set_xlim(6, 20)
             ax.set_xticks(range(6, 21))
@@ -4678,7 +5023,6 @@ class MainWindow(QWidget):
         files_mappings = {
             'setting': 'setting_path',
             'manual': 'visualization_input_path',
-            'output': 'visualization_input_path',  # Also accept output*.xlsx for visualization
         }
         
         # Files to search in 'temporary' folder (generated intermediate files)
@@ -4700,6 +5044,15 @@ class MainWindow(QWidget):
                         if force or current_value is None:
                             setattr(self, attr_name, xlsx_file)
                         break
+        
+        # Search in output folder for output*.xlsx (for visualization)
+        output_dir = app_dir / "output"
+        if output_dir.exists():
+            for xlsx_file in output_dir.glob("output*.xlsx"):
+                current_value = getattr(self, 'visualization_input_path', None)
+                if force or current_value is None:
+                    self.visualization_input_path = xlsx_file
+                    break
         
         # Search in temporary folder
         if temporary_dir.exists():
@@ -4766,7 +5119,7 @@ class MainWindow(QWidget):
                     return today.year, today.month + 1
 
     def _get_default_output_path(self, mode: str = "opt") -> Path:
-        """Get the default output path in files subdirectory with timestamp filename
+        """Get the default output path in output subdirectory with timestamp filename
         
         Args:
             mode: "opt" for optimization output, "vis" for visualization output
@@ -4776,11 +5129,10 @@ class MainWindow(QWidget):
         filename = f"output_{mode}_{ts}.xlsx"
         
         app_dir = get_app_dir()
-        files_dir = app_dir / "files"
+        output_dir = app_dir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
         
-        if files_dir.exists():
-            return files_dir / filename
-        return Path.cwd() / filename
+        return output_dir / filename
 
     def _set_progress(self, value: int, message: str):
         """Update progress bar and log"""
@@ -5154,16 +5506,29 @@ class MainWindow(QWidget):
 
             self._set_progress(20, "データを読み込み中...")
             setting = Setting(self.setting_path)
+            set_reserve_names(setting.get_reserve_names())
             work = WorkData.from_setting(setting, target_year, target_month)
             # generated_shift_A/Bはtemporaryフォルダに出力
-            temporary_dir = self.output_path.parent.parent / "temporary" if self.output_path else Path.cwd() / "temporary"
+            app_dir = get_app_dir()
+            temporary_dir = app_dir / "temporary"
             temporary_dir.mkdir(parents=True, exist_ok=True)
+            _UNREGISTERED_STAFF.clear()
             jobA = JobData.from_setting(setting, "A", target_year, target_month,
                          kintai_path=self.kintai_A_path if hasattr(self, 'kintai_A_path') else None,
                          output_dir=temporary_dir)
             jobB = JobData.from_setting(setting, "B", target_year, target_month,
                          kintai_path=self.kintai_B_path if hasattr(self, 'kintai_B_path') else None,
                          output_dir=temporary_dir)
+            if _UNREGISTERED_STAFF:
+                names = '、'.join(dict.fromkeys(_UNREGISTERED_STAFF))
+                QMessageBox.warning(
+                    self, "未登録スタッフ",
+                    f"{names}さんの勤務条件が設定されていません。\n"
+                    "setting.xlsxのjobA/jobB・dictA/dictB・orderA/orderBシートを\n"
+                    "更新してアプリを再起動してください。"
+                )
+                _UNREGISTERED_STAFF.clear()
+                return
             duty_template = DutyTemplate(self.duty_path, target_year, target_month) if self.duty_path else None
 
             self._set_progress(30, "最適化モデルを構築中...")
@@ -5216,6 +5581,8 @@ class MainWindow(QWidget):
                 QMessageBox.critical(self, "実行不能エラー", msg)
                 return
 
+            self._set_progress(65, "ダミー割当を最適化中...")
+            opt.post_process_reduce_dummy()
             self._set_progress(70, "結果を抽出中...")
             assign_df, available_A_df, available_B_df, stats_df, violation_df = opt.extract_output()
             
@@ -5500,7 +5867,7 @@ class MainWindow(QWidget):
             if not self.setting_path or not self.setting_path.exists():
                 missing_files.append("setting*.xlsx (基本設定) → filesフォルダ")
             if not self.visualization_input_path or not self.visualization_input_path.exists():
-                missing_files.append("manual*.xlsx または output*.xlsx → filesフォルダ")
+                missing_files.append("manual*.xlsx → filesフォルダ、または output*.xlsx → outputフォルダ")
             
             if missing_files:
                 msg = "可視化モードに必要なファイルが見つかりません。\n\n"
@@ -5583,6 +5950,7 @@ class MainWindow(QWidget):
             self._set_progress(20, "設定データを読み込み中...")
             if self.setting_path:
                 setting = Setting(self.setting_path)
+                set_reserve_names(setting.get_reserve_names())
                 work = WorkData.from_setting(setting, target_year, target_month)
                 # generated_shift_A/Bはtemporaryフォルダに出力
                 temporary_dir = self.output_path.parent.parent / "temporary" if self.output_path else Path.cwd() / "temporary"
@@ -5883,6 +6251,7 @@ class MainWindow(QWidget):
         
         try:
             setting = Setting(self.setting_path)
+            set_reserve_names(setting.get_reserve_names())
         except Exception as e:
             errors.append(f"settingファイルの読み込みに失敗しました: {str(e)}")
             QMessageBox.critical(self, "設定エラー", "\n".join(errors))
@@ -5957,11 +6326,16 @@ class MainWindow(QWidget):
             
             if unknown_members:
                 unique_unknown = list(dict.fromkeys(unknown_members))
-                warning_msg = f"settingファイルで定義されていないメンバーが含まれています（{', '.join(unique_unknown[:10])}）。これらのメンバーは無視されます"
+                names = '、'.join(unique_unknown[:10])
                 if len(unique_unknown) > 10:
-                    warning_msg += f" ...他{len(unique_unknown) - 10}名"
-                self.append_log(f"警告: {warning_msg}")
-                logging.warning(warning_msg)
+                    names += f"（他{len(unique_unknown) - 10}名）"
+                QMessageBox.warning(
+                    self, "未登録スタッフ",
+                    f"{names}さんの勤務条件が設定されていません。\n"
+                    "setting.xlsxのjobA/jobB・dictA/dictB・orderA/orderBシートを\n"
+                    "更新してアプリを再起動してください。"
+                )
+                return
             
             date_row = df.iloc[3]
             target_year, target_month = self._compute_target_period()
@@ -6015,6 +6389,7 @@ class MainWindow(QWidget):
         """
         try:
             setting = Setting(self.setting_path)
+            set_reserve_names(setting.get_reserve_names())
             target_year, target_month = self._compute_target_period()
             
             members_df_list = []
@@ -6160,7 +6535,7 @@ from license_manager import LicenseManager  # noqa: E402
 
 
 class LicenseDialog(QDialog):
-    """License authentication dialog with machine-ID display."""
+    """License authentication dialog (fallback when auto-login unavailable)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -6176,23 +6551,6 @@ class LicenseDialog(QDialog):
             "font-size: 14px; font-weight: bold; margin-bottom: 10px;"
         )
         layout.addWidget(title_label)
-
-        # Machine ID (read-only, for admin to generate a license)
-        mid_layout = QHBoxLayout()
-        mid_label = QLabel("マシンID:")
-        mid_label.setFixedWidth(100)
-        self.mid_input = QLineEdit()
-        self.mid_input.setReadOnly(True)
-        fp = LicenseManager.get_machine_fingerprint()
-        self.mid_input.setText(fp[:16] + "…")
-        self.mid_input.setToolTip(fp)
-        copy_btn = QPushButton("コピー")
-        copy_btn.setFixedWidth(60)
-        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(fp))
-        mid_layout.addWidget(mid_label)
-        mid_layout.addWidget(self.mid_input)
-        mid_layout.addWidget(copy_btn)
-        layout.addLayout(mid_layout)
 
         # User ID
         id_layout = QHBoxLayout()
@@ -6261,14 +6619,24 @@ def main():
     sys.excepthook = _global_excepthook
     app = QApplication(sys.argv)
     
+    # Ensure standard subdirectories exist next to the executable
+    app_dir = get_app_dir()
+    for subdir in ("files", "input", "output"):
+        (app_dir / subdir).mkdir(parents=True, exist_ok=True)
+    
     default_font_name = get_system_japanese_font()
     if default_font_name:
         app.setFont(QFont(default_font_name, 10))
     
-    # License authentication
-    license_dialog = LicenseDialog()
-    if license_dialog.exec() != QDialog.DialogCode.Accepted or not license_dialog.authenticated:
-        sys.exit(0)
+    # License authentication — auto-login if valid .license exists in files/
+    manager = LicenseManager()
+    auto_ok, auto_msg = manager.validate_license_auto()
+    if auto_ok:
+        logging.info(auto_msg)
+    else:
+        license_dialog = LicenseDialog()
+        if license_dialog.exec() != QDialog.DialogCode.Accepted or not license_dialog.authenticated:
+            sys.exit(0)
     
     w = MainWindow()
     

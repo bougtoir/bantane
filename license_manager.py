@@ -1,16 +1,19 @@
 """License management module for Bantane Shift Optimizer.
 
-Provides hardware-bound license generation and validation using
+Provides license generation and validation using
 Fernet (AES-128-CBC + HMAC-SHA256) encryption.
 
 This module is deliberately kept free of GUI dependencies so that
 ``generate_license.py`` can import it without PySide6.
 """
 
+import calendar
 import datetime as dt
 import hashlib
 import logging
 import platform
+import secrets as _secrets
+import string
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -18,18 +21,25 @@ from typing import List, Optional, Tuple
 def _get_app_dir() -> Path:
     """Return the directory that contains the running executable / script."""
     import sys
+    # PyInstaller
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).parent
+        return Path(sys.executable).resolve().parent
+    # Nuitka / other bundlers: sys.executable is NOT a python interpreter
+    try:
+        exe_stem = Path(sys.executable).stem.lower()
+        if exe_stem not in ("python", "python3", "pythonw", "python3w") \
+                and not exe_stem.startswith("python3."):
+            return Path(sys.executable).resolve().parent
+    except Exception:
+        pass
+    return Path(__file__).resolve().parent
 
 
 class LicenseManager:
-    """Manages license validation with hardware-bound encryption.
+    """Manages license generation and validation.
 
     License files are encrypted with Fernet (AES-128-CBC + HMAC-SHA256)
-    using a key derived from a master secret.  Each license is optionally
-    bound to a machine fingerprint so copying the .license file to another
-    PC will fail validation.
+    using a key derived from a master secret.
     """
 
     _MASTER = b'BantaneShiftOpt2026!SecureMasterKey'
@@ -42,18 +52,24 @@ class LicenseManager:
 
     @staticmethod
     def _find_license_file() -> Path:
-        """Search for .license file in app dir and its subdirectories."""
+        """Search for .license file in app dir/files/ first, then app dir."""
         app_dir = _get_app_dir()
-        # 1) app dir itself
-        candidate = app_dir / '.license'
-        if candidate.exists():
-            return candidate
-        # 2) files/ subfolder
+        # 1) files/ subfolder (default location)
         candidate = app_dir / 'files' / '.license'
         if candidate.exists():
             return candidate
-        # Default to app dir (will show "not found" on validation)
-        return app_dir / '.license'
+        # 2) app dir itself
+        candidate = app_dir / '.license'
+        if candidate.exists():
+            return candidate
+        # 3) any immediate subdirectory
+        for sub in app_dir.iterdir():
+            if sub.is_dir():
+                candidate = sub / '.license'
+                if candidate.exists():
+                    return candidate
+        # Default to files/ subfolder
+        return app_dir / 'files' / '.license'
 
     # -- cryptography helpers ------------------------------------------------
 
@@ -86,14 +102,57 @@ class LicenseManager:
     def get_machine_fingerprint() -> str:
         """Return a stable fingerprint for the current machine.
 
-        Combines hostname, MAC address, and (on Windows) the system drive
-        volume serial number.  The result is a hex SHA-256 digest.
+        Combines hostname, all physical MAC addresses (sorted), and
+        (on Windows) the system drive volume serial number.
+        The result is a hex SHA-256 digest.
+
+        Note: Uses all MAC addresses sorted to ensure deterministic results
+        regardless of NIC enumeration order (uuid.getnode() can be
+        non-deterministic when multiple NICs exist).
         """
         import socket
-        import uuid as _uuid
         parts: List[str] = []
         parts.append(socket.gethostname())
-        parts.append(str(_uuid.getnode()))  # MAC address as int
+
+        # Collect all MAC addresses deterministically
+        mac_addresses: List[str] = []
+        if platform.system() == 'Windows':
+            try:
+                import subprocess as _sp
+                out = _sp.check_output(
+                    'getmac /FO CSV /NH',
+                    shell=True, text=True, stderr=_sp.DEVNULL
+                )
+                for line in out.strip().splitlines():
+                    # Each line: "AA-BB-CC-DD-EE-FF","...","..."
+                    cols = line.split(',')
+                    if cols:
+                        mac = cols[0].strip().strip('"')
+                        if mac and mac != 'N/A' and '-' in mac:
+                            mac_addresses.append(mac.upper())
+            except Exception:
+                pass
+        else:
+            try:
+                import subprocess as _sp
+                out = _sp.check_output(
+                    ['ip', 'link', 'show'],
+                    text=True, stderr=_sp.DEVNULL
+                )
+                import re
+                for m in re.finditer(r'link/ether\s+([0-9a-fA-F:]{17})', out):
+                    mac_addresses.append(m.group(1).upper())
+            except Exception:
+                pass
+
+        if not mac_addresses:
+            # Fallback to uuid.getnode() if no MACs found
+            import uuid as _uuid
+            mac_addresses.append(str(_uuid.getnode()))
+
+        mac_addresses.sort()
+        parts.append('|'.join(mac_addresses))
+
         if platform.system() == 'Windows':
             try:
                 import subprocess as _sp
@@ -111,102 +170,174 @@ class LicenseManager:
 
     # -- public API ----------------------------------------------------------
 
+    @staticmethod
+    def _generate_password(length: int = 16) -> str:
+        """Generate a random password of adequate strength."""
+        alphabet = string.ascii_letters + string.digits + string.punctuation
+        # Ensure at least one of each category
+        pw: List[str] = [
+            _secrets.choice(string.ascii_uppercase),
+            _secrets.choice(string.ascii_lowercase),
+            _secrets.choice(string.digits),
+            _secrets.choice(string.punctuation),
+        ]
+        pw += [_secrets.choice(alphabet) for _ in range(length - 4)]
+        # Shuffle so guaranteed chars aren't always at the start
+        import random
+        rng = random.SystemRandom()
+        rng.shuffle(pw)
+        return ''.join(pw)
+
+    @staticmethod
+    def parse_expiration(value: str) -> dt.date:
+        """Parse expiration input.
+
+        Accepts:
+          - ``yyyymm`` — valid until the last day of that month
+          - ``dd``     — valid for *dd* days from tomorrow (creation day
+                         excluded)
+        """
+        value = value.strip()
+        if len(value) == 6 and value.isdigit():
+            year = int(value[:4])
+            month = int(value[4:])
+            if month < 1 or month > 12:
+                raise ValueError(f"月が不正です: {month}")
+            last_day = calendar.monthrange(year, month)[1]
+            return dt.date(year, month, last_day)
+        elif value.isdigit():
+            days = int(value)
+            if days <= 0:
+                raise ValueError("日数は1以上を指定してください。")
+            # Creation day excluded: start counting from tomorrow
+            return dt.date.today() + dt.timedelta(days=days)
+        else:
+            raise ValueError(
+                "有効期間は yyyymm（例: 202612）または日数（例: 90）で"
+                "指定してください。"
+            )
+
     def generate_license(
         self,
         user_id: str,
-        password: str,
-        expiration_days: int = 365,
+        password: Optional[str] = None,
+        expiration_days: Optional[int] = None,
+        expiration_date: Optional[dt.date] = None,
         machine_fingerprint: Optional[str] = None,
-    ) -> str:
-        """Create and save a new license file.  Returns the file path.
+    ) -> Tuple[str, str]:
+        """Create and save a new license file.
 
-        If *machine_fingerprint* is ``None`` the current machine's fingerprint
-        is used.  Pass an explicit fingerprint to generate a license for a
-        remote machine (see ``generate_license.py``).
+        Returns ``(file_path, generated_password)``.
+
+        If *password* is ``None`` a strong random password is generated.
+        Exactly one of *expiration_days* or *expiration_date* should be set.
         """
         import json
         import os
-        import secrets as _secrets
+
+        if password is None:
+            password = self._generate_password()
+
+        if expiration_date is not None:
+            exp_str = expiration_date.strftime('%Y-%m-%d')
+        elif expiration_days is not None:
+            exp_str = (
+                dt.datetime.now() + dt.timedelta(days=expiration_days)
+            ).strftime('%Y-%m-%d')
+        else:
+            exp_str = (
+                dt.datetime.now() + dt.timedelta(days=365)
+            ).strftime('%Y-%m-%d')
 
         salt_hex = _secrets.token_hex(16)
         password_hash = self._hash_password(password, salt_hex)
-        expiration_date = (
-            dt.datetime.now() + dt.timedelta(days=expiration_days)
-        ).strftime('%Y-%m-%d')
-
-        fp = machine_fingerprint or self.get_machine_fingerprint()
 
         license_data = {
-            'version': 2,
+            'version': 4,
             'user_id': user_id,
             'password_hash': password_hash,
+            'password': password,
             'salt': salt_hex,
-            'expiration_date': expiration_date,
-            'machine_fingerprint': fp,
+            'expiration_date': exp_str,
             'created_at': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
 
         enc_salt = os.urandom(16)
         token = self._encrypt(json.dumps(license_data), enc_salt)
 
-        # Fixed-length format: exactly 16 salt bytes followed by token.
-        # No delimiter needed — salt length is known at read time.
         with open(self.license_file, 'wb') as f:
             f.write(enc_salt + token)
 
-        return str(self.license_file)
+        return str(self.license_file), password
 
-    def validate_license(self, user_id: str, password: str) -> Tuple[bool, str]:
-        """Validate credentials and machine binding.  Returns (ok, message)."""
+    def _read_license_data(self) -> dict:
+        """Decrypt and return the license data dict.  Raises on failure."""
         import json
 
+        raw = self.license_file.read_bytes()
+        if len(raw) <= 16:
+            raise ValueError('ライセンスファイルの形式が不正です。')
+        enc_salt = raw[:16]
+        token = raw[16:]
+        if token[:1] == b'\n':
+            token = token[1:]
+        decrypted = self._decrypt(token, enc_salt)
+        return json.loads(decrypted)
+
+    def validate_license_auto(self) -> Tuple[bool, str]:
+        """Auto-validate: file exists, decryptable, not expired.
+
+        No user_id / password required.  Returns (ok, message).
+        """
         if not self.license_file.exists():
-            return False, '\u30e9\u30a4\u30bb\u30f3\u30b9\u30d5\u30a1\u30a4\u30eb\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002'
-
+            return False, 'ライセンスファイルが見つかりません。'
         try:
-            raw = self.license_file.read_bytes()
-
-            # v2 format: first 16 bytes = encryption salt, rest = Fernet token
-            if len(raw) <= 16:
-                return False, '\u30e9\u30a4\u30bb\u30f3\u30b9\u30d5\u30a1\u30a4\u30eb\u306e\u5f62\u5f0f\u304c\u4e0d\u6b63\u3067\u3059\u3002'
-            enc_salt = raw[:16]
-            token = raw[16:]
-            # Strip legacy separator if present (v2 files written before fix)
-            if token[:1] == b'\n':
-                token = token[1:]
-            decrypted = self._decrypt(token, enc_salt)
-            license_data = json.loads(decrypted)
-
-            if license_data.get('user_id') != user_id:
-                return False, '\u30e6\u30fc\u30b6\u30fcID\u304c\u6b63\u3057\u304f\u3042\u308a\u307e\u305b\u3093\u3002'
-
-            pw_hash = self._hash_password(password, license_data['salt'])
-            if pw_hash != license_data['password_hash']:
-                return False, '\u30d1\u30b9\u30ef\u30fc\u30c9\u304c\u6b63\u3057\u304f\u3042\u308a\u307e\u305b\u3093\u3002'
-
-            # Machine binding check
-            expected_fp = license_data.get('machine_fingerprint')
-            if expected_fp:
-                current_fp = self.get_machine_fingerprint()
-                if current_fp != expected_fp:
-                    return False, (
-                        '\u3053\u306ePC\u306e\u30e9\u30a4\u30bb\u30f3\u30b9\u3067\u306f\u3042\u308a\u307e\u305b\u3093\u3002\n'
-                        '\u7ba1\u7406\u8005\u306b\u73fe\u5728\u306e\u30de\u30b7\u30f3ID \u3092\u304a\u4f1d\u3048\u304f\u3060\u3055\u3044:\n'
-                        f'{current_fp[:16]}...'
-                    )
-
+            data = self._read_license_data()
             expiration = dt.datetime.strptime(
-                license_data['expiration_date'], '%Y-%m-%d'
+                data['expiration_date'], '%Y-%m-%d'
             )
             if dt.datetime.now() > expiration:
                 return False, (
-                    f"\u30e9\u30a4\u30bb\u30f3\u30b9\u306e\u6709\u52b9\u671f\u9650\u304c\u5207\u308c\u3066\u3044\u307e\u3059\u3002"
-                    f"\uff08\u6709\u52b9\u671f\u9650: {license_data['expiration_date']}\uff09"
+                    f"ライセンスの有効期限が切れています。"
+                    f"（有効期限: {data['expiration_date']}）"
+                )
+            days_remaining = (expiration - dt.datetime.now()).days
+            user_id = data.get('user_id', '不明')
+            return True, (
+                f'ライセンス認証成功（{user_id}）。'
+                f'残り{days_remaining}日有効です。'
+            )
+        except Exception as e:
+            logging.error(f'License auto-validation error: {e}')
+            return False, f'ライセンスファイルの読み込みに失敗しました: {e}'
+
+    def validate_license(self, user_id: str, password: str) -> Tuple[bool, str]:
+        """Validate credentials.  Returns (ok, message)."""
+        if not self.license_file.exists():
+            return False, 'ライセンスファイルが見つかりません。'
+
+        try:
+            data = self._read_license_data()
+
+            if data.get('user_id') != user_id:
+                return False, 'ユーザーIDが正しくありません。'
+
+            pw_hash = self._hash_password(password, data['salt'])
+            if pw_hash != data['password_hash']:
+                return False, 'パスワードが正しくありません。'
+
+            expiration = dt.datetime.strptime(
+                data['expiration_date'], '%Y-%m-%d'
+            )
+            if dt.datetime.now() > expiration:
+                return False, (
+                    f"ライセンスの有効期限が切れています。"
+                    f"（有効期限: {data['expiration_date']}）"
                 )
 
             days_remaining = (expiration - dt.datetime.now()).days
-            return True, f'\u30e9\u30a4\u30bb\u30f3\u30b9\u8a8d\u8a3c\u6210\u529f\u3002\u6b8b\u308a{days_remaining}\u65e5\u6709\u52b9\u3067\u3059\u3002'
+            return True, f'ライセンス認証成功。残り{days_remaining}日有効です。'
 
         except Exception as e:
             logging.error(f'License validation error: {e}')
-            return False, f'\u30e9\u30a4\u30bb\u30f3\u30b9\u30d5\u30a1\u30a4\u30eb\u306e\u8aad\u307f\u8fbc\u307f\u306b\u5931\u6557\u3057\u307e\u3057\u305f: {e}'
+            return False, f'ライセンスファイルの読み込みに失敗しました: {e}'

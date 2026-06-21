@@ -82,10 +82,24 @@ echo   ビルド完了！
 echo ========================================
 echo.
 
+REM Create subfolders next to the exe in dist
+if not exist "dist\files" mkdir dist\files
+if not exist "dist\input" mkdir dist\input
+if not exist "dist\output" mkdir dist\output
+
+REM Copy setting files to dist\files
+if exist "files\setting*.xlsx" (
+    xcopy /Y files\setting*.xlsx dist\files\
+) else (
+    for %%f in (setting*.xlsx) do copy /Y "%%f" dist\files\
+)
+
 REM Create release folder structure
 echo 配布用フォルダを作成しています...
 if not exist "release" mkdir release
 if not exist "release\files" mkdir release\files
+if not exist "release\input" mkdir release\input
+if not exist "release\output" mkdir release\output
 
 REM Copy exe
 copy /Y dist\BantaneShiftOptimizer.exe release\

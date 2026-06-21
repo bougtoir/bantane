@@ -105,7 +105,32 @@ python -m nuitka %NUITKA_OPTS% app.py
 
 if %errorlevel% neq 0 (
     echo.
-    echo [ERROR] Nuitka build failed.
+    echo [WARNING] Nuitka returned non-zero exit code.
+    echo   If the exe was created, this may be a warning only.
+    echo.
+)
+
+REM Always create subfolders next to the exe in dist_nuitka
+if exist "dist_nuitka\BantaneShiftOptimizer.exe" (
+    echo.
+    echo ========================================
+    echo   Build Complete (Nuitka)
+    echo ========================================
+    echo.
+    echo Output: dist_nuitka\BantaneShiftOptimizer.exe
+    echo.
+    echo Creating dist_nuitka subfolders...
+    mkdir dist_nuitka\files 2>nul
+    mkdir dist_nuitka\input 2>nul
+    mkdir dist_nuitka\output 2>nul
+    if exist "files\setting*.xlsx" (
+        xcopy /Y files\setting*.xlsx dist_nuitka\files\
+    ) else (
+        for %%f in (setting*.xlsx) do copy /Y "%%f" dist_nuitka\files\
+    )
+) else (
+    echo.
+    echo [ERROR] Nuitka build failed - exe not found.
     echo.
     echo Troubleshooting:
     echo   - Ensure a C compiler is installed (MinGW64 or MSVC)
@@ -114,18 +139,12 @@ if %errorlevel% neq 0 (
     goto :end
 )
 
-echo.
-echo ========================================
-echo   Build Complete (Nuitka)
-echo ========================================
-echo.
-echo Output: dist_nuitka\BantaneShiftOptimizer.exe
-echo.
-
 REM Create release folder structure
 echo Creating release folder...
 if not exist "release" mkdir release
 if not exist "release\files" mkdir release\files
+if not exist "release\input" mkdir release\input
+if not exist "release\output" mkdir release\output
 
 REM Copy exe
 copy /Y dist_nuitka\BantaneShiftOptimizer.exe release\
