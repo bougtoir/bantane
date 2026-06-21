@@ -45,9 +45,9 @@ if %errorlevel% neq 0 (
     goto :end
 )
 
-REM Install Nuitka and ordered-set (speeds up compilation)
+REM Install Nuitka with onefile support and ordered-set (speeds up compilation)
 echo Installing Nuitka...
-pip install nuitka ordered-set
+pip install "nuitka[onefile]" ordered-set
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to install Nuitka.
     goto :end
