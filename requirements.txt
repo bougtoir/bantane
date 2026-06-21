@@ -3,6 +3,7 @@ numpy
 matplotlib
 PySide6
 pulp
+highspy
 openpyxl
 xlrd
 jpholiday
