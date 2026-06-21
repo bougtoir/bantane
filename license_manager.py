@@ -21,9 +21,15 @@ from typing import List, Optional, Tuple
 def _get_app_dir() -> Path:
     """Return the directory that contains the running executable / script."""
     import sys
-    if getattr(sys, "frozen", False) or "__compiled__" in globals():
-        return Path(sys.executable).parent
-    return Path(__file__).parent
+    # PyInstaller
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    # Nuitka: sys.executable is the compiled exe, not a python interpreter
+    exe_name = Path(sys.executable).stem.lower()
+    if exe_name not in ("python", "python3", "pythonw", "python3w") and not exe_name.startswith("python3."):
+        if Path(__file__).resolve().parent != Path(sys.executable).resolve().parent:
+            return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
 
 
 class LicenseManager:

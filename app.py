@@ -27,20 +27,32 @@ import jpholiday
 logging.basicConfig(filename="shift_app.log", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
+def _is_bundled_exe() -> bool:
+    """Detect if running as a bundled exe (PyInstaller or Nuitka)."""
+    # PyInstaller
+    if getattr(sys, "frozen", False):
+        return True
+    # Nuitka: sys.executable points to the compiled exe, not a python interpreter
+    exe_name = Path(sys.executable).stem.lower()
+    if exe_name not in ("python", "python3", "pythonw", "python3w") and not exe_name.startswith("python3."):
+        # Additional check: if __file__ and sys.executable are in different dirs,
+        # it's likely a Nuitka --onefile extraction
+        if Path(__file__).resolve().parent != Path(sys.executable).resolve().parent:
+            return True
+    return False
+
+
 def get_app_dir() -> Path:
     """Get the application directory, handling PyInstaller / Nuitka exe case.
     
-    When running as a PyInstaller exe, __file__ points to a temporary extraction
-    directory, not the exe's location.  Nuitka --onefile behaves similarly but
-    sets ``__compiled__`` instead of ``sys.frozen``.
-    This function returns the correct directory in all cases.
+    When running as a bundled exe, __file__ may point to a temporary extraction
+    directory. This function always returns the directory containing the actual
+    executable.
     """
-    if getattr(sys, "frozen", False) or "__compiled__" in globals():
-        # Running as a PyInstaller / Nuitka exe - use exe location
-        return Path(sys.executable).parent
+    if _is_bundled_exe():
+        return Path(sys.executable).resolve().parent
     else:
-        # Running as a normal script
-        return Path(__file__).parent
+        return Path(__file__).resolve().parent
 
 
 def get_system_japanese_font():
