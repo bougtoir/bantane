@@ -5236,8 +5236,12 @@ class MainWindow(QWidget):
         ts = now.strftime("%Y%m%d%H%M")
         filename = f"output_{mode}_{ts}.xlsx"
         
-        app_dir = get_app_dir()
-        output_dir = app_dir / "output"
+        # In bundled exe mode, output must go to a persistent directory
+        # (not the Nuitka temp extraction dir which is deleted on exit)
+        if _is_bundled_exe():
+            output_dir = _STARTUP_CWD / "output"
+        else:
+            output_dir = get_app_dir() / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
         
         return output_dir / filename
@@ -5617,8 +5621,12 @@ class MainWindow(QWidget):
             set_reserve_names(setting.get_reserve_names())
             work = WorkData.from_setting(setting, target_year, target_month)
             # generated_shift_A/Bはtemporaryフォルダに出力
-            app_dir = get_app_dir()
-            temporary_dir = app_dir / "temporary"
+            # Bundled exe: use persistent directory (next to exe), not temp extraction dir
+            if _is_bundled_exe():
+                persistent_dir = _STARTUP_CWD
+            else:
+                persistent_dir = get_app_dir()
+            temporary_dir = persistent_dir / "temporary"
             temporary_dir.mkdir(parents=True, exist_ok=True)
             _UNREGISTERED_STAFF.clear()
             jobA = JobData.from_setting(setting, "A", target_year, target_month,
@@ -5963,9 +5971,12 @@ class MainWindow(QWidget):
         """Run visualization only mode"""
         try:
             self._set_progress(0, "可視化のみを開始します...")
-            app_dir = get_app_dir()
-            files_dir = app_dir / "files"
-            temporary_dir = app_dir / "temporary"
+            if _is_bundled_exe():
+                persistent_dir = _STARTUP_CWD
+            else:
+                persistent_dir = get_app_dir()
+            files_dir = persistent_dir / "files"
+            temporary_dir = persistent_dir / "temporary"
             
             # Refresh file paths from files and temporary directories (in case files were added after startup)
             self._refresh_paths_from_files_dir(force=False)
