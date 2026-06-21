@@ -28,14 +28,15 @@ logging.basicConfig(filename="shift_app.log", level=logging.INFO, format="%(asct
 
 
 def get_app_dir() -> Path:
-    """Get the application directory, handling PyInstaller exe case.
+    """Get the application directory, handling PyInstaller / Nuitka exe case.
     
     When running as a PyInstaller exe, __file__ points to a temporary extraction
-    directory, not the exe's location. This function returns the correct directory
-    in both cases.
+    directory, not the exe's location.  Nuitka --onefile behaves similarly but
+    sets ``__compiled__`` instead of ``sys.frozen``.
+    This function returns the correct directory in all cases.
     """
-    if getattr(sys, "frozen", False):
-        # Running as a PyInstaller exe - use exe location
+    if getattr(sys, "frozen", False) or "__compiled__" in dir():
+        # Running as a PyInstaller / Nuitka exe - use exe location
         return Path(sys.executable).parent
     else:
         # Running as a normal script
@@ -6611,6 +6612,11 @@ def main():
     ensure_xlrd_installed()
     sys.excepthook = _global_excepthook
     app = QApplication(sys.argv)
+    
+    # Ensure standard subdirectories exist next to the executable
+    app_dir = get_app_dir()
+    for subdir in ("files", "input", "output"):
+        (app_dir / subdir).mkdir(parents=True, exist_ok=True)
     
     default_font_name = get_system_japanese_font()
     if default_font_name:

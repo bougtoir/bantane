@@ -34,7 +34,7 @@ def main():
     parser.add_argument(
         "--output",
         default=None,
-        help="出力先ファイルパス（デフォルト: .license）",
+        help="出力先ファイルパス（デフォルト: files/.license）",
     )
     args = parser.parse_args()
 

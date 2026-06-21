@@ -21,7 +21,7 @@ from typing import List, Optional, Tuple
 def _get_app_dir() -> Path:
     """Return the directory that contains the running executable / script."""
     import sys
-    if getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False) or "__compiled__" in dir():
         return Path(sys.executable).parent
     return Path(__file__).parent
 
@@ -43,18 +43,24 @@ class LicenseManager:
 
     @staticmethod
     def _find_license_file() -> Path:
-        """Search for .license file in app dir and its subdirectories."""
+        """Search for .license file in app dir/files/ first, then app dir."""
         app_dir = _get_app_dir()
-        # 1) app dir itself
-        candidate = app_dir / '.license'
-        if candidate.exists():
-            return candidate
-        # 2) files/ subfolder
+        # 1) files/ subfolder (default location)
         candidate = app_dir / 'files' / '.license'
         if candidate.exists():
             return candidate
-        # Default to app dir (will show "not found" on validation)
-        return app_dir / '.license'
+        # 2) app dir itself
+        candidate = app_dir / '.license'
+        if candidate.exists():
+            return candidate
+        # 3) any immediate subdirectory
+        for sub in app_dir.iterdir():
+            if sub.is_dir():
+                candidate = sub / '.license'
+                if candidate.exists():
+                    return candidate
+        # Default to files/ subfolder
+        return app_dir / 'files' / '.license'
 
     # -- cryptography helpers ------------------------------------------------
 

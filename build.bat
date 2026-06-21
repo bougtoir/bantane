@@ -86,6 +86,7 @@ REM Create release folder structure
 echo 配布用フォルダを作成しています...
 if not exist "release" mkdir release
 if not exist "release\files" mkdir release\files
+if not exist "release\input" mkdir release\input
 if not exist "release\output" mkdir release\output
 
 REM Copy exe
