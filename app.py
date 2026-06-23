@@ -5836,7 +5836,7 @@ class MainWindow(QWidget):
             msg += "コマンドプロンプトまたはターミナルで以下のコマンドを実行してください：\n\n"
             msg += "pip install -r requirements.txt\n\n"
             msg += "または、不足しているモジュールを個別にインストール：\n"
-            msg += "pip install pandas openpyxl ortools PyQt6 matplotlib\n\n"
+            msg += "pip install pandas openpyxl pulp PySide6 matplotlib\n\n"
             msg += f"エラー詳細: {str(e)}"
             logging.error(f"ImportError: {str(e)}")
             self._set_progress(0, "エラー発生")
