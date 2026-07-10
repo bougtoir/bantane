@@ -71,7 +71,7 @@ REM
 REM Nuitka compiles Python to C then to native code,
 REM making reverse-engineering extremely difficult.
 
-set NUITKA_OPTS=--onefile --mingw64 --windows-console-mode=disable
+set NUITKA_OPTS=--onefile --msvc=latest --windows-console-mode=disable
 set NUITKA_OPTS=%NUITKA_OPTS% --enable-plugin=pyside6
 set NUITKA_OPTS=%NUITKA_OPTS% --include-package=pulp
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=cryptography
@@ -79,12 +79,10 @@ set NUITKA_OPTS=%NUITKA_OPTS% --include-module=jpholiday
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=xlrd
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=openpyxl
 set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pulp.tests
+set NUITKA_OPTS=%NUITKA_OPTS% --include-module=highspy
 
-REM Include PuLP solver data files
-for /f "delims=" %%P in ('python -c "import pulp; import os; print(os.path.dirname(pulp.__file__))"') do set PULP_DIR=%%P
-if defined PULP_DIR (
-    set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir="%PULP_DIR%"=pulp
-)
+REM Include highspy package data (solver library)
+set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=highspy
 
 set NUITKA_OPTS=%NUITKA_OPTS% --output-filename=BantaneShiftOptimizer.exe
 set NUITKA_OPTS=%NUITKA_OPTS% --output-dir=dist_nuitka
@@ -139,6 +137,8 @@ if exist "dist_nuitka\BantaneShiftOptimizer.exe" (
     echo   - Try: pip install --upgrade nuitka
     goto :end
 )
+
+
 
 REM Create release folder structure
 echo Creating release folder...
