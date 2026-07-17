@@ -119,6 +119,20 @@ def _solve_with_highs(model, time_limit: float = 15.0) -> int:
     fragile name-order matching is required.
     Returns the PuLP status code.
     """
+    # An empty model (no decision variables) is not a real optimization problem:
+    # HiGHS reports it as kModelEmpty and PuLP's in-process interface would
+    # otherwise return "Optimal" for it. This happens when the loaded data
+    # produces no work x staff variables (e.g. need_A/need_B all zero, no target
+    # staff, or the target period contains no jobs). Treat it as infeasible and
+    # log a clear, distinguishable reason instead of a silent empty result.
+    if not model.variables():
+        logging.warning(
+            "最適化モデルが空です（決定変数なし）。対象期間に割り当てる業務(need_A/need_B)"
+            "または対象スタッフが読み込めていない可能性があります。setting.xlsxの内容と対象期間を確認してください。"
+        )
+        model.status = pulp.constants.LpStatusInfeasible
+        return model.status
+
     solver = pulp.HiGHS(msg=False, timeLimit=time_limit)
     model.solve(solver)
     logging.info('HiGHS solver status: %s', pulp.LpStatus[model.status])
