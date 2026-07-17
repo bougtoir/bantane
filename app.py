@@ -5636,8 +5636,8 @@ class MainWindow(QWidget):
             opt = Optimizer(setting, work, jobA, jobB, duty_template)
             logging.info(f"mode=実行, setting={self.setting_path}, output={self.output_path}")
             
-            self._set_progress(40, "最適化計算中（5回繰り返し）...")
-            iterations = 5
+            self._set_progress(40, "最適化計算中...")
+            iterations = 1
             res = opt.build_and_solve(max_iterations=iterations)
             status_text = self._solver_status_to_japanese(res)
             self._set_progress(60, f"ソルバー結果: {status_text}")
