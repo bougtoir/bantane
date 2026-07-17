@@ -47,41 +47,96 @@ def _is_bundled_exe() -> bool:
     return False
 
 
-def get_app_dir() -> Path:
-    """Get the application directory.
+def _is_temp_dir(path: Path) -> bool:
+    """Return True if path appears to be inside a temp/extraction directory."""
+    s = str(path).lower()
+    # Windows temp patterns: AppData\Local\Temp, onefile extraction dirs
+    return ('\\temp\\' in s or '/temp/' in s or s.endswith('\\temp') or s.endswith('/temp'))
 
-    PyInstaller sets sys.frozen; Nuitka does not, but sys.executable
-    points to the compiled .exe rather than a Python interpreter.
-    In Nuitka --onefile mode sys.executable may point to a temp
-    extraction directory; sys.argv[0] preserves the original path.
-    When neither resolves to the correct directory, fall back to
-    the startup working directory (CWD at process start).
+
+def get_app_dir() -> Path:
+    """Get the application directory (persistent, next to the exe).
+
+    Handles PyInstaller, Nuitka onefile, and normal script execution.
+    In Nuitka onefile mode, all standard paths (sys.argv[0], sys.executable,
+    CWD, __file__) may resolve to the temp extraction directory.
+    This function explicitly excludes temp directories to find the real
+    persistent directory where the exe and files/ folder reside.
     """
-    if _is_bundled_exe():
-        candidates = []
-        seen = set()
-        for d in (
-            Path(sys.argv[0]).resolve().parent,
-            Path(sys.executable).resolve().parent,
-            _STARTUP_CWD,
-        ):
+    candidates = [
+        Path(sys.argv[0]).parent,
+        Path(sys.argv[0]).resolve().parent,
+        Path(sys.executable).parent,
+        Path(sys.executable).resolve().parent,
+        _STARTUP_CWD,
+        Path(__file__).resolve().parent,
+    ]
+    # Deduplicate while preserving order
+    seen: set = set()
+    unique: list = []
+    for d in candidates:
+        try:
             key = str(d)
-            if key not in seen:
-                seen.add(key)
-                candidates.append(d)
-        logging.info(
-            'get_app_dir candidates: %s', [str(c) for c in candidates],
+        except Exception:
+            continue
+        if key not in seen:
+            seen.add(key)
+            unique.append(d)
+
+    logging.info('get_app_dir candidates: %s', [str(c) for c in unique])
+
+    # Priority 1: non-temp directory with 'files' subfolder
+    for d in unique:
+        if not _is_temp_dir(d) and (d / 'files').is_dir():
+            logging.info('get_app_dir: selected %s (non-temp, has files/)', d)
+            return d
+
+    # Priority 2: first non-temp directory
+    for d in unique:
+        if not _is_temp_dir(d):
+            logging.info('get_app_dir: fallback non-temp %s', d)
+            return d
+
+    # Priority 3: any directory with 'files' (even if temp)
+    for d in unique:
+        if (d / 'files').is_dir():
+            logging.info('get_app_dir: last resort %s (has files/)', d)
+            return d
+
+    # Ultimate fallback
+    logging.info('get_app_dir: ultimate fallback %s', unique[0])
+    return unique[0]
+
+
+def _solve_with_highs(model, time_limit: float = 15.0) -> int:
+    """Solve a PuLP model with the in-process HiGHS solver (highspy).
+
+    Uses PuLP's native HiGHS interface, which drives the highspy C library
+    in-process. This avoids the Nuitka onefile issue where an external solver
+    executable cannot be spawned from the temp extraction directory, and also
+    removes the writeMPS/readModel disk round-trip that dominated per-solve
+    Python time. PuLP maps the solution back onto the variables directly, so no
+    fragile name-order matching is required.
+    Returns the PuLP status code.
+    """
+    # An empty model (no decision variables) is not a real optimization problem:
+    # HiGHS reports it as kModelEmpty and PuLP's in-process interface would
+    # otherwise return "Optimal" for it. This happens when the loaded data
+    # produces no work x staff variables (e.g. need_A/need_B all zero, no target
+    # staff, or the target period contains no jobs). Treat it as infeasible and
+    # log a clear, distinguishable reason instead of a silent empty result.
+    if not model.variables():
+        logging.warning(
+            "最適化モデルが空です（決定変数なし）。対象期間に割り当てる業務(need_A/need_B)"
+            "または対象スタッフが読み込めていない可能性があります。setting.xlsxの内容と対象期間を確認してください。"
         )
-        # Return the first candidate that has a 'files' subdirectory
-        for d in candidates:
-            if (d / 'files').is_dir():
-                logging.info('get_app_dir: selected %s (has files/)', d)
-                return d
-        # Fallback: startup CWD (most reliable for double-click on Windows)
-        logging.info('get_app_dir: fallback to startup CWD %s', _STARTUP_CWD)
-        return _STARTUP_CWD
-    # Normal script execution
-    return Path(__file__).resolve().parent
+        model.status = pulp.constants.LpStatusInfeasible
+        return model.status
+
+    solver = pulp.HiGHS(msg=False, timeLimit=time_limit)
+    model.solve(solver)
+    logging.info('HiGHS solver status: %s', pulp.LpStatus[model.status])
+    return model.status
 
 
 def get_system_japanese_font():
@@ -2423,7 +2478,7 @@ class Optimizer:
             if objective_terms:
                 self.model += pulp.lpSum(objective_terms), "Objective"
 
-            self.model.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=15))
+            _solve_with_highs(self.model, time_limit=15.0)
             res = self.model.status
 
             if res == pulp.LpStatusOptimal:
@@ -2439,6 +2494,11 @@ class Optimizer:
                     best_solution = (res, self.x_vars.copy(), self.y_vars.copy(), self.violations.copy(), solution_values)
             elif self.infeasible_reasons:
                 self.violations.extend(self.infeasible_reasons)
+
+            # HiGHS is a deterministic solver: re-solving the identical model
+            # yields the same objective every time. The repeated-iteration
+            # strategy was only useful with CBC, so a single solve suffices.
+            break
 
         if best_solution:
             res, self.x_vars, self.y_vars, self.violations, self.solution_values = best_solution
@@ -5050,10 +5110,20 @@ class MainWindow(QWidget):
         Args:
             force: If True, overwrite existing paths. If False, only fill in None paths.
         """
-        app_dir = get_app_dir()
-        files_dir = app_dir / "files"
-        temporary_dir = app_dir / "temporary"
-        
+        # Build candidate base directories (same strategy as license search)
+        base_dirs: List[Path] = []
+        seen: Set[str] = set()
+        for d in (
+            get_app_dir(),
+            Path(sys.argv[0]).resolve().parent,
+            Path(sys.executable).resolve().parent,
+            _STARTUP_CWD,
+        ):
+            key = str(d)
+            if key not in seen:
+                seen.add(key)
+                base_dirs.append(d)
+
         # Files to search in 'files' folder
         files_mappings = {
             'setting': 'setting_path',
@@ -5069,36 +5139,48 @@ class MainWindow(QWidget):
             'generated_shift_B': 'generated_shift_B_path',
         }
         
-        # Search in files folder
-        if files_dir.exists():
-            for xlsx_file in files_dir.glob("*.xlsx"):
-                file_name = xlsx_file.name.lower()
-                for prefix, attr_name in files_mappings.items():
-                    if prefix.lower() in file_name:
-                        current_value = getattr(self, attr_name, None)
-                        if force or current_value is None:
-                            setattr(self, attr_name, xlsx_file)
-                        break
-        
-        # Search in output folder for output*.xlsx (for visualization)
-        output_dir = app_dir / "output"
-        if output_dir.exists():
-            for xlsx_file in output_dir.glob("output*.xlsx"):
-                current_value = getattr(self, 'visualization_input_path', None)
-                if force or current_value is None:
-                    self.visualization_input_path = xlsx_file
+        # Search in files folder across all candidate base directories
+        for base in base_dirs:
+            files_dir = base / "files"
+            if files_dir.exists():
+                for xlsx_file in files_dir.glob("*.xlsx"):
+                    file_name = xlsx_file.name.lower()
+                    for prefix, attr_name in files_mappings.items():
+                        if file_name.startswith(prefix.lower()):
+                            current_value = getattr(self, attr_name, None)
+                            if force or current_value is None:
+                                setattr(self, attr_name, xlsx_file)
+                                logging.info('Found %s: %s', prefix, xlsx_file)
+                            break
+                if getattr(self, 'setting_path', None) is not None:
                     break
         
-        # Search in temporary folder
-        if temporary_dir.exists():
-            for xlsx_file in temporary_dir.glob("*.xlsx"):
-                file_name = xlsx_file.name.lower()
-                for prefix, attr_name in temporary_mappings.items():
-                    if prefix.lower() in file_name:
-                        current_value = getattr(self, attr_name, None)
-                        if force or current_value is None:
-                            setattr(self, attr_name, xlsx_file)
-                        break
+        # Search in output folder for output*.xlsx (for visualization)
+        for base in base_dirs:
+            output_dir = base / "output"
+            if output_dir.exists():
+                for xlsx_file in output_dir.glob("output*.xlsx"):
+                    current_value = getattr(self, 'visualization_input_path', None)
+                    if force or current_value is None:
+                        self.visualization_input_path = xlsx_file
+                    break
+                if getattr(self, 'visualization_input_path', None) is not None:
+                    break
+        
+        # Search in temporary folder across all candidate base directories
+        for base in base_dirs:
+            temporary_dir = base / "temporary"
+            if temporary_dir.exists():
+                for xlsx_file in temporary_dir.glob("*.xlsx"):
+                    file_name = xlsx_file.name.lower()
+                    for prefix, attr_name in temporary_mappings.items():
+                        if prefix.lower() in file_name:
+                            current_value = getattr(self, attr_name, None)
+                            if force or current_value is None:
+                                setattr(self, attr_name, xlsx_file)
+                            break
+                if any(getattr(self, attr, None) is not None for attr in temporary_mappings.values()):
+                    break
 
     def _compute_target_period(self) -> Tuple[int, int]:
         """Compute the target year and month based on button state
@@ -5163,8 +5245,7 @@ class MainWindow(QWidget):
         ts = now.strftime("%Y%m%d%H%M")
         filename = f"output_{mode}_{ts}.xlsx"
         
-        app_dir = get_app_dir()
-        output_dir = app_dir / "output"
+        output_dir = get_app_dir() / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
         
         return output_dir / filename
@@ -5544,8 +5625,7 @@ class MainWindow(QWidget):
             set_reserve_names(setting.get_reserve_names())
             work = WorkData.from_setting(setting, target_year, target_month)
             # generated_shift_A/Bはtemporaryフォルダに出力
-            app_dir = get_app_dir()
-            temporary_dir = app_dir / "temporary"
+            temporary_dir = get_app_dir() / "temporary"
             temporary_dir.mkdir(parents=True, exist_ok=True)
             _UNREGISTERED_STAFF.clear()
             jobA = JobData.from_setting(setting, "A", target_year, target_month,
@@ -5570,8 +5650,8 @@ class MainWindow(QWidget):
             opt = Optimizer(setting, work, jobA, jobB, duty_template)
             logging.info(f"mode=実行, setting={self.setting_path}, output={self.output_path}")
             
-            self._set_progress(40, "最適化計算中（5回繰り返し）...")
-            iterations = 5
+            self._set_progress(40, "最適化計算中...")
+            iterations = 1
             res = opt.build_and_solve(max_iterations=iterations)
             status_text = self._solver_status_to_japanese(res)
             self._set_progress(60, f"ソルバー結果: {status_text}")
