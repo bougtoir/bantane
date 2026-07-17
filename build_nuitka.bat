@@ -45,9 +45,9 @@ if %errorlevel% neq 0 (
     goto :end
 )
 
-REM Install Nuitka with onefile support and ordered-set (speeds up compilation)
+REM Install Nuitka and ordered-set (speeds up compilation)
 echo Installing Nuitka...
-pip install "nuitka[onefile]" ordered-set
+pip install nuitka ordered-set
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to install Nuitka.
     goto :end
@@ -61,19 +61,24 @@ echo ========================================
 echo.
 
 REM Nuitka compilation
-REM   --onefile            : single .exe output
+REM   --standalone         : self-contained folder output (no per-launch temp
+REM                          extraction, so startup is faster than --onefile)
+REM   --lto=yes            : link-time optimization for faster native code
+REM   --jobs=N             : parallel C compilation
 REM   --windows-console-mode=disable : no console window (GUI app)
 REM   --enable-plugin=pyside6 : PySide6 support
 REM   --include-package=pulp : include PuLP solver
-REM   --include-data-dir    : include PuLP solver data
+REM   --include-module=highspy / --include-package-data=highspy : HiGHS solver
 REM   --windows-icon-from-ico : app icon (if exists)
 REM
 REM Nuitka compiles Python to C then to native code,
 REM making reverse-engineering extremely difficult.
 
-set NUITKA_OPTS=--onefile --mingw64 --windows-console-mode=disable
+set NUITKA_OPTS=--standalone --mingw64 --lto=yes --jobs=%NUMBER_OF_PROCESSORS% --windows-console-mode=disable
 set NUITKA_OPTS=%NUITKA_OPTS% --enable-plugin=pyside6
 set NUITKA_OPTS=%NUITKA_OPTS% --include-package=pulp
+set NUITKA_OPTS=%NUITKA_OPTS% --include-module=highspy
+set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=highspy
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=cryptography
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=jpholiday
 set NUITKA_OPTS=%NUITKA_OPTS% --include-module=xlrd
@@ -111,44 +116,44 @@ if %errorlevel% neq 0 (
     echo.
 )
 
-REM Always create subfolders next to the exe in dist_nuitka
-if exist "dist_nuitka\BantaneShiftOptimizer.exe" (
+REM --standalone output is the folder dist_nuitka\app.dist with the exe inside.
+set DIST_DIR=dist_nuitka\app.dist
+if exist "%DIST_DIR%\BantaneShiftOptimizer.exe" (
     echo.
     echo ========================================
-    echo   Build Complete - Nuitka
+    echo   Build Complete - Nuitka standalone
     echo ========================================
     echo.
-    echo Output: dist_nuitka\BantaneShiftOptimizer.exe
+    echo Output folder: %DIST_DIR%
     echo.
-    echo Creating dist_nuitka subfolders...
-    mkdir dist_nuitka\files 2>nul
-    mkdir dist_nuitka\input 2>nul
-    mkdir dist_nuitka\output 2>nul
+    echo Creating runtime subfolders next to the exe...
+    mkdir "%DIST_DIR%\files" 2>nul
+    mkdir "%DIST_DIR%\input" 2>nul
+    mkdir "%DIST_DIR%\output" 2>nul
     if exist "files\*setting*.xlsx" (
-        xcopy /Y files\*setting*.xlsx dist_nuitka\files\
+        xcopy /Y files\*setting*.xlsx "%DIST_DIR%\files\"
     ) else (
-        for %%f in (*setting*.xlsx) do copy /Y "%%f" dist_nuitka\files\
+        for %%f in (*setting*.xlsx) do copy /Y "%%f" "%DIST_DIR%\files\"
     )
 ) else (
     echo.
     echo [ERROR] Nuitka build failed - exe not found.
     echo.
     echo Troubleshooting:
-    echo   - Ensure a C compiler is installed (MinGW64 or MSVC)
+    echo   - MinGW64 is downloaded automatically by Nuitka on first build
     echo   - Run: python -m nuitka --version
     echo   - Try: pip install --upgrade nuitka
     goto :end
 )
 
-REM Create release folder structure
+REM Build the shippable release folder = the whole standalone folder + tools.
 echo Creating release folder...
-if not exist "release" mkdir release
+if exist "release" rmdir /S /Q release
+mkdir release
+xcopy /E /I /Y "%DIST_DIR%" release
 if not exist "release\files" mkdir release\files
 if not exist "release\input" mkdir release\input
 if not exist "release\output" mkdir release\output
-
-REM Copy exe
-copy /Y dist_nuitka\BantaneShiftOptimizer.exe release\
 
 REM Copy setting files
 if exist "files\*setting*.xlsx" (
@@ -167,8 +172,8 @@ echo ========================================
 echo   Release folder ready
 echo ========================================
 echo.
-echo release\ contents:
-echo   release\BantaneShiftOptimizer.exe
+echo release\ contains the standalone app folder:
+echo   release\BantaneShiftOptimizer.exe (plus bundled DLLs)
 echo   release\files\*setting*.xlsx
 echo   release\generate_license.bat
 echo   release\generate_license.py
@@ -176,7 +181,7 @@ echo   release\license_manager.py
 echo.
 echo Distribution checklist:
 echo   1. Run generate_license.bat to issue a license
-echo   2. Deliver the release\ folder to the end user
+echo   2. Deliver the entire release\ folder to the end user
 echo   3. Place the .license file in the same folder as the .exe
 echo.
 
