@@ -67,6 +67,7 @@ jobs:
 
           robocopy dist_nuitka/app.dist release /E /NFL /NDL
           if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
+          $LASTEXITCODE = 0
 
           New-Item -ItemType Directory -Force "release/files" | Out-Null
           New-Item -ItemType Directory -Force "release/input" | Out-Null
