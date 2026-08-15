@@ -130,6 +130,7 @@ def _solve_with_highs(model, time_limit: float = 15.0) -> int:
             "最適化モデルが空です（決定変数なし）。対象期間に割り当てる業務(need_A/need_B)"
             "または対象スタッフが読み込めていない可能性があります。setting.xlsxの内容と対象期間を確認してください。"
         )
+        model.empty_model = True
         model.status = pulp.constants.LpStatusInfeasible
         return model.status
 
@@ -1889,6 +1890,7 @@ class Optimizer:
     OPTIMAL = pulp.LpStatusOptimal
     FEASIBLE = pulp.LpStatusOptimal  # PuLP doesn't distinguish FEASIBLE from OPTIMAL
     INFEASIBLE = pulp.LpStatusInfeasible
+    MODEL_EMPTY = -3  # 決定変数なし（need_A/need_B 0、対象スタッフ不在など）
     
     def __init__(self, setting: Setting, work: WorkData, jobA: Optional[JobData], jobB: Optional[JobData], duty_template: Optional[DutyTemplate] = None):
         self.setting = setting
@@ -1924,8 +1926,11 @@ class Optimizer:
         """
         result = self._build_and_solve_internal(max_iterations, include_reserve=False)
         
-        if result == Optimizer.INFEASIBLE:
-            logging.info("通常スタッフのみでは不能解。ダミースタッフを含めて再試行します。")
+        if result in (Optimizer.INFEASIBLE, Optimizer.MODEL_EMPTY):
+            if result == Optimizer.MODEL_EMPTY:
+                logging.info("通常スタッフのみで最適化モデルが空。ダミースタッフを含めて再試行します。")
+            else:
+                logging.info("通常スタッフのみでは不能解。ダミースタッフを含めて再試行します。")
             self.infeasible_reasons = []
             self.violations = []
             result = self._build_and_solve_internal(max_iterations, include_reserve=True)
@@ -2504,6 +2509,8 @@ class Optimizer:
             res, self.x_vars, self.y_vars, self.violations, self.solution_values = best_solution
             return Optimizer.OPTIMAL
         else:
+            if getattr(self.model, "empty_model", False):
+                return Optimizer.MODEL_EMPTY
             return Optimizer.INFEASIBLE
 
     def _add_workload_leveling_constraints(self, W, w_rows, A_list, B_list):
@@ -5265,6 +5272,7 @@ class MainWindow(QWidget):
             pulp.LpStatusUnbounded: "解が無限大です",
             pulp.LpStatusNotSolved: "解が見つかりませんでした",
             pulp.LpStatusUndefined: "モデルが無効です",
+            Optimizer.MODEL_EMPTY: "最適化モデルが空です（決定変数なし）。対象期間に割り当てる業務(need_A/need_B)または対象スタッフが読み込めていない可能性があります。setting.xlsxの内容と対象期間を確認してください。",
         }
         return status_map.get(status, f"不明なステータス ({status})")
 
@@ -5660,10 +5668,19 @@ class MainWindow(QWidget):
             if res != Optimizer.OPTIMAL:
                 violations = getattr(opt, "violations", [])
                 
-                msg = "【実行不能エラー (E311)】\n\n"
-                msg += "割り当てが成立しませんでした。以下の理由が考えられます：\n\n"
+                if res == Optimizer.MODEL_EMPTY:
+                    msg = "【最適化モデルが空です (E311a)】\n\n"
+                    msg += "対象期間に割り当てる業務(need_A/need_B)または対象スタッフが読み込めていない可能性があります。\n\n"
+                    msg += "【確認事項】\n"
+                    msg += "1. setting.xlsxの対象年月・業務一覧(work)に該当期間の業務があるか\n"
+                    msg += "2. jobA/jobB.xlsxのmembers/shiftに対象スタッフが登録されているか\n"
+                    msg += "3. kintaiA/kintaiBで全員が不可用になっていないか\n"
+                    msg += "4. 個人業務(duty)によって全員が割り当て対象外になっていないか\n\n"
+                else:
+                    msg = "【実行不能エラー (E311)】\n\n"
+                    msg += "割り当てが成立しませんでした。以下の理由が考えられます：\n\n"
                 
-                if violations:
+                if violations and res != Optimizer.MODEL_EMPTY:
                     msg += "【主な問題】\n"
                     for i, violation in enumerate(violations[:5], 1):
                         msg += f"{i}. {violation}\n"
@@ -5680,7 +5697,7 @@ class MainWindow(QWidget):
                     msg += "   → 職種設定ファイル(jobA/jobB.xlsx)のshiftシートでstaffを追加\n\n"
                     msg += "4. ペナルティ設定を緩和する\n"
                     msg += "   → 基本設定ファイル(setting.xlsx)のexceptionシートで制約を緩和\n\n"
-                else:
+                elif res != Optimizer.MODEL_EMPTY:
                     msg += "制約条件が厳しすぎる可能性があります。\n\n"
                     msg += "【対処方法】\n"
                     msg += "1. 各日の必要人数と可用人数のバランスを確認\n"
