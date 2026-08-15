@@ -1890,7 +1890,7 @@ class Optimizer:
     OPTIMAL = pulp.LpStatusOptimal
     FEASIBLE = pulp.LpStatusOptimal  # PuLP doesn't distinguish FEASIBLE from OPTIMAL
     INFEASIBLE = pulp.LpStatusInfeasible
-    MODEL_EMPTY = -3  # 決定変数なし（need_A/need_B 0、対象スタッフ不在など）
+    MODEL_EMPTY = -100  # 決定変数なし（need_A/need_B 0、対象スタッフ不在など）。PuLPのステータス値と衝突しない値
     
     def __init__(self, setting: Setting, work: WorkData, jobA: Optional[JobData], jobB: Optional[JobData], duty_template: Optional[DutyTemplate] = None):
         self.setting = setting
