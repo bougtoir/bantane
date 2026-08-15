@@ -45,7 +45,7 @@ jobs:
             "--include-module=jpholiday",
             "--include-module=xlrd",
             "--nofollow-import-to=pulp.tests",
-            "--include-data-dir=`"$pulpDir`=pulp",
+            "--include-data-dir=$pulpDir=pulp",
             "--output-filename=BantaneShiftOptimizer.exe",
             "--output-dir=dist_nuitka",
             "--remove-output"
