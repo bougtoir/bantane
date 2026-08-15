@@ -36,6 +36,7 @@ jobs:
             "--msvc=latest",
             "--lto=yes",
             "--jobs=4",
+            "--assume-yes-for-downloads",
             "--windows-console-mode=disable",
             "--enable-plugin=pyside6",
             "--include-package=pulp",
