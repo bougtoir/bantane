@@ -68,6 +68,7 @@ def get_app_dir() -> Path:
         Path(sys.argv[0]).resolve().parent,
         Path(sys.executable).parent,
         Path(sys.executable).resolve().parent,
+        Path(sys.executable).resolve().parent.parent,
         _STARTUP_CWD,
         Path(__file__).resolve().parent,
     ]
@@ -6766,9 +6767,16 @@ def main():
     if auto_ok:
         logging.info(auto_msg)
     else:
-        license_dialog = LicenseDialog()
-        if license_dialog.exec() != QDialog.DialogCode.Accepted or not license_dialog.authenticated:
-            sys.exit(0)
+        logging.warning("License auto-validation failed (%s): %s", manager.license_file, auto_msg)
+        QMessageBox.critical(
+            None,
+            "ライセンスエラー",
+            "現在有効なライセンスがないため起動しません。\n\n"
+            f"理由: {auto_msg}\n\n"
+            "ライセンスファイル(.license)を以下に配置してから再起動してください。\n"
+            f"{manager.license_file}",
+        )
+        sys.exit(0)
     
     w = MainWindow()
     

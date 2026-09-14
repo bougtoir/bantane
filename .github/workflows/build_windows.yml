@@ -4,7 +4,17 @@ on:
   push:
     branches:
       - 'devin/build-release'
+      - 'devin/*-release-layout'
   workflow_dispatch:
+    inputs:
+      license_user_id:
+        description: 'ライセンスのユーザーID'
+        required: false
+        default: 'bantane'
+      license_expiration:
+        description: '有効期間 (yyyymm または 日数)'
+        required: false
+        default: '365'
 
 jobs:
   build:
@@ -58,20 +68,33 @@ jobs:
             throw "Build failed: BantaneShiftOptimizer.exe not found"
           }
 
+      - name: Build launcher exe
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSPATH=%%i
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
+          cl /nologo /O1 /W3 /D_UNICODE /DUNICODE launcher\launcher.c /Fe:BantaneShiftOptimizer.exe /link /SUBSYSTEM:WINDOWS user32.lib
+          if not exist BantaneShiftOptimizer.exe exit /b 1
+
       - name: Prepare release folder
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           if (Test-Path "release") { Remove-Item -Recurse -Force "release" }
-          New-Item -ItemType Directory -Force "release" | Out-Null
+          New-Item -ItemType Directory -Force "release/bin" | Out-Null
 
-          robocopy dist_nuitka/app.dist release /E /NFL /NDL
+          robocopy dist_nuitka/app.dist release/bin /E /NFL /NDL
           if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
           $LASTEXITCODE = 0
+
+          Copy-Item -Path "BantaneShiftOptimizer.exe" -Destination "release/"
 
           New-Item -ItemType Directory -Force "release/files" | Out-Null
           New-Item -ItemType Directory -Force "release/input" | Out-Null
           New-Item -ItemType Directory -Force "release/output" | Out-Null
+          # artifacts drop empty directories; keep them with a placeholder
+          Set-Content -Path "release/input/README.txt" -Value "勤務入力表などの入力ファイルをここに置きます。" -Encoding UTF8
+          Set-Content -Path "release/output/README.txt" -Value "生成されたシフト表がここに出力されます。" -Encoding UTF8
 
           $settings = Get-ChildItem -Path "files" -Filter "*setting*.xlsx" -ErrorAction SilentlyContinue
           if (-not $settings) {
@@ -81,9 +104,37 @@ jobs:
             Copy-Item -Path $settings.FullName -Destination "release/files/"
           }
 
+          New-Item -ItemType Directory -Force "release/tools" | Out-Null
           @("generate_license.bat", "generate_license.py", "license_manager.py") | ForEach-Object {
-            if (Test-Path $_) { Copy-Item -Path $_ -Destination "release/" }
+            if (Test-Path $_) { Copy-Item -Path $_ -Destination "release/tools/" }
           }
+
+      - name: Generate license
+        shell: pwsh
+        env:
+          LICENSE_USER_ID: ${{ inputs.license_user_id || 'bantane' }}
+          LICENSE_EXPIRATION: ${{ inputs.license_expiration || '365' }}
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference = "Stop"
+          python generate_license.py --user-id $env:LICENSE_USER_ID --expiration $env:LICENSE_EXPIRATION --output release/files/.license
+          if (-not (Test-Path "release/files/.license")) { throw ".license was not generated" }
+
+      - name: Smoke test (launch and check license auto-validation)
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $root = Resolve-Path "release"
+          $p = Start-Process -FilePath "$root\BantaneShiftOptimizer.exe" -WorkingDirectory $root -PassThru
+          Start-Sleep -Seconds 40
+          Get-Process -Name BantaneShiftOptimizer -ErrorAction SilentlyContinue | Stop-Process -Force
+          $log = Join-Path $root "shift_app.log"
+          if (-not (Test-Path $log)) { throw "shift_app.log was not created: exe did not start" }
+          Get-Content $log
+          if (-not (Select-String -Path $log -Pattern "License found" -Quiet)) { throw "license not found at startup" }
+          if (Select-String -Path $log -Pattern "auto-validation failed" -Quiet) { throw "license auto-validation failed" }
+          Remove-Item $log -Force
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
@@ -91,3 +142,4 @@ jobs:
           name: bantane-release
           path: release
           if-no-files-found: error
+          include-hidden-files: true

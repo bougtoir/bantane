@@ -78,6 +78,9 @@ def main():
                 files_sub = sub / "files"
                 if files_sub.is_dir():
                     targets.append(files_sub / ".license")
+        if not targets and (script_dir.parent / "files").is_dir():
+            # Installed layout: tools/generate_license.py next to ../files/
+            targets.append(script_dir.parent / "files" / ".license")
         if not targets:
             # Fallback: create files/ next to this script
             fallback = script_dir / "files"
@@ -102,7 +105,7 @@ def main():
     for p in generated_paths:
         print(f"  ファイル       : {p}")
     print(f"  ユーザーID     : {user_id}")
-    print(f"  有効期限       : {exp_date.strftime('%Y年%m月%d日')}")
+    print(f"  有効期限       : {exp_date.year}年{exp_date.month:02d}月{exp_date.day:02d}日")
     print(f"  パスワード     : {password}")
     print("=" * 55)
     print()
