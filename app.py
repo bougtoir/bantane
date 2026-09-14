@@ -6768,9 +6768,15 @@ def main():
         logging.info(auto_msg)
     else:
         logging.warning("License auto-validation failed (%s): %s", manager.license_file, auto_msg)
-        license_dialog = LicenseDialog()
-        if license_dialog.exec() != QDialog.DialogCode.Accepted or not license_dialog.authenticated:
-            sys.exit(0)
+        QMessageBox.critical(
+            None,
+            "ライセンスエラー",
+            "現在有効なライセンスがないため起動しません。\n\n"
+            f"理由: {auto_msg}\n\n"
+            "ライセンスファイル(.license)を以下に配置してから再起動してください。\n"
+            f"{manager.license_file}",
+        )
+        sys.exit(0)
     
     w = MainWindow()
     
