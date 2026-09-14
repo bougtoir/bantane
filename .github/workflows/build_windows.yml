@@ -101,6 +101,11 @@ jobs:
             Copy-Item -Path $settings.FullName -Destination "release/files/"
           }
 
+          New-Item -ItemType Directory -Force "release/tools" | Out-Null
+          @("generate_license.bat", "generate_license.py", "license_manager.py") | ForEach-Object {
+            if (Test-Path $_) { Copy-Item -Path $_ -Destination "release/tools/" }
+          }
+
       - name: Generate license
         shell: pwsh
         env:
