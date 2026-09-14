@@ -162,11 +162,6 @@ if exist "files\*setting*.xlsx" (
     for %%f in (*setting*.xlsx) do copy /Y "%%f" release\files\
 )
 
-REM Copy license tools
-if exist "generate_license.bat" copy /Y generate_license.bat release\
-if exist "generate_license.py" copy /Y generate_license.py release\
-if exist "license_manager.py" copy /Y license_manager.py release\
-
 echo.
 echo ========================================
 echo   Release folder ready
@@ -175,14 +170,12 @@ echo.
 echo release\ contains the standalone app folder:
 echo   release\BantaneShiftOptimizer.exe (plus bundled DLLs)
 echo   release\files\*setting*.xlsx
-echo   release\generate_license.bat
-echo   release\generate_license.py
-echo   release\license_manager.py
 echo.
 echo Distribution checklist:
-echo   1. Run generate_license.bat to issue a license
-echo   2. Deliver the entire release\ folder to the end user
-echo   3. Place the .license file in the same folder as the .exe
+echo   1. Run generate_license.bat here (NOT in release\) to issue a license
+echo   2. Copy the generated .license to release\files\
+echo   3. Deliver the entire release\ folder to the end user
+echo      (never ship generate_license.py / license_manager.py)
 echo.
 
 :end
