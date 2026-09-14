@@ -105,7 +105,7 @@ def main():
     for p in generated_paths:
         print(f"  ファイル       : {p}")
     print(f"  ユーザーID     : {user_id}")
-    print(f"  有効期限       : {exp_date.strftime('%Y年%m月%d日')}")
+    print(f"  有効期限       : {exp_date.year}年{exp_date.month:02d}月{exp_date.day:02d}日")
     print(f"  パスワード     : {password}")
     print("=" * 55)
     print()
