@@ -35,11 +35,29 @@ echo.
 echo generate_license.py を実行します...
 echo.
 
+REM Ensure the cryptography package is available
+python -c "import cryptography" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo cryptography パッケージが見つかりません。インストールします...
+    python -m pip install cryptography
+    if %errorlevel% neq 0 (
+        echo [エラー] cryptography のインストールに失敗しました。
+        echo 手動で  python -m pip install cryptography  を実行してください。
+        goto :end
+    )
+    echo.
+)
+
 REM Run the license generator
 python generate_license.py %*
+set GEN_RC=%errorlevel%
 
 echo.
-echo 終了コード: %errorlevel%
+echo 終了コード: %GEN_RC%
+if not "%GEN_RC%"=="0" (
+    echo [エラー] ライセンス発行に失敗しました。上記のエラーを確認してください。
+    goto :end
+)
 
 REM Check if .license was created in any dist*/files/ or release/files/
 set LICENSE_FOUND=0
