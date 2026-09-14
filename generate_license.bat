@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul 2>&1
 setlocal
 
@@ -50,7 +50,9 @@ for /d %%D in (dist* release) do (
     )
 )
 if "%LICENSE_FOUND%"=="0" (
-    if exist "files\.license" (
+    if exist "..\files\.license" (
+        echo [成功] .license: %CD%\..\files\.license
+    ) else if exist "files\.license" (
         echo [成功] .license: %CD%\files\.license
     ) else if exist ".license" (
         echo [成功] .license: %CD%\.license

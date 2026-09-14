@@ -78,6 +78,9 @@ def main():
                 files_sub = sub / "files"
                 if files_sub.is_dir():
                     targets.append(files_sub / ".license")
+        if not targets and (script_dir.parent / "files").is_dir():
+            # Installed layout: tools/generate_license.py next to ../files/
+            targets.append(script_dir.parent / "files" / ".license")
         if not targets:
             # Fallback: create files/ next to this script
             fallback = script_dir / "files"

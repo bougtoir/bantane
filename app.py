@@ -68,6 +68,7 @@ def get_app_dir() -> Path:
         Path(sys.argv[0]).resolve().parent,
         Path(sys.executable).parent,
         Path(sys.executable).resolve().parent,
+        Path(sys.executable).resolve().parent.parent,
         _STARTUP_CWD,
         Path(__file__).resolve().parent,
     ]

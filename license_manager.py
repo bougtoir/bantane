@@ -51,6 +51,7 @@ def _get_app_dir() -> Path:
         for d in (
             Path(sys.argv[0]).resolve().parent,
             Path(sys.executable).resolve().parent,
+            Path(sys.executable).resolve().parent.parent,
             _STARTUP_CWD,
         ):
             key = str(d)
