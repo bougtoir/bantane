@@ -95,12 +95,15 @@ class LicenseManager:
             _get_app_dir(),
             Path(sys.argv[0]).resolve().parent,
             Path(sys.executable).resolve().parent,
+            Path(sys.executable).resolve().parent.parent,
+            _STARTUP_CWD,
             Path(__file__).resolve().parent,
         ):
             key = str(d)
             if key not in dirs_seen:
                 dirs_seen.add(key)
                 search_dirs.append(d)
+        logging.info('License search dirs: %s', [str(d) for d in search_dirs])
 
         # 1) files/ subfolder in each candidate dir
         for d in search_dirs:
