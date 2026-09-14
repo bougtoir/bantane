@@ -355,12 +355,13 @@ class LicenseManager:
             expiration = dt.datetime.strptime(
                 data['expiration_date'], '%Y-%m-%d'
             ).date()
-            if dt.date.today() > expiration:
+            today = dt.date.today()
+            if today > expiration:
                 return False, (
                     f"ライセンスの有効期限が切れています。"
                     f"（有効期限: {data['expiration_date']}）"
                 )
-            days_remaining = (expiration - dt.date.today()).days
+            days_remaining = (expiration - today).days
             user_id = data.get('user_id', '不明')
             return True, (
                 f'ライセンス認証成功（{user_id}）。'
@@ -388,13 +389,14 @@ class LicenseManager:
             expiration = dt.datetime.strptime(
                 data['expiration_date'], '%Y-%m-%d'
             ).date()
-            if dt.date.today() > expiration:
+            today = dt.date.today()
+            if today > expiration:
                 return False, (
                     f"ライセンスの有効期限が切れています。"
                     f"（有効期限: {data['expiration_date']}）"
                 )
 
-            days_remaining = (expiration - dt.date.today()).days
+            days_remaining = (expiration - today).days
             return True, f'ライセンス認証成功。残り{days_remaining}日有効です。'
 
         except Exception as e:
