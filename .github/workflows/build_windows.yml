@@ -120,6 +120,22 @@ jobs:
           python generate_license.py --user-id $env:LICENSE_USER_ID --expiration $env:LICENSE_EXPIRATION --output release/files/.license
           if (-not (Test-Path "release/files/.license")) { throw ".license was not generated" }
 
+      - name: Smoke test (launch and check license auto-validation)
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $root = Resolve-Path "release"
+          $p = Start-Process -FilePath "$root\BantaneShiftOptimizer.exe" -WorkingDirectory $root -PassThru
+          Start-Sleep -Seconds 40
+          Get-Process -Name BantaneShiftOptimizer -ErrorAction SilentlyContinue | Stop-Process -Force
+          $log = Join-Path $root "shift_app.log"
+          if (-not (Test-Path $log)) { throw "shift_app.log was not created: exe did not start" }
+          Get-Content $log
+          if (-not (Select-String -Path $log -Pattern "License found" -Quiet)) { throw "license not found at startup" }
+          if (Select-String -Path $log -Pattern "auto-validation failed" -Quiet) { throw "license auto-validation failed" }
+          Remove-Item $log -Force
+
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
