@@ -92,6 +92,9 @@ jobs:
           New-Item -ItemType Directory -Force "release/files" | Out-Null
           New-Item -ItemType Directory -Force "release/input" | Out-Null
           New-Item -ItemType Directory -Force "release/output" | Out-Null
+          # artifacts drop empty directories; keep them with a placeholder
+          Set-Content -Path "release/input/README.txt" -Value "勤務入力表などの入力ファイルをここに置きます。" -Encoding UTF8
+          Set-Content -Path "release/output/README.txt" -Value "生成されたシフト表がここに出力されます。" -Encoding UTF8
 
           $settings = Get-ChildItem -Path "files" -Filter "*setting*.xlsx" -ErrorAction SilentlyContinue
           if (-not $settings) {
@@ -123,3 +126,4 @@ jobs:
           name: bantane-release
           path: release
           if-no-files-found: error
+          include-hidden-files: true
