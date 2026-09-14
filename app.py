@@ -6767,6 +6767,7 @@ def main():
     if auto_ok:
         logging.info(auto_msg)
     else:
+        logging.warning("License auto-validation failed (%s): %s", manager.license_file, auto_msg)
         license_dialog = LicenseDialog()
         if license_dialog.exec() != QDialog.DialogCode.Accepted or not license_dialog.authenticated:
             sys.exit(0)
