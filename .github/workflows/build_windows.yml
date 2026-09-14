@@ -111,6 +111,7 @@ jobs:
         env:
           LICENSE_USER_ID: ${{ inputs.license_user_id || 'bantane' }}
           LICENSE_EXPIRATION: ${{ inputs.license_expiration || '365' }}
+          PYTHONUTF8: '1'
         run: |
           $ErrorActionPreference = "Stop"
           python generate_license.py --user-id $env:LICENSE_USER_ID --expiration $env:LICENSE_EXPIRATION --output release/files/.license
